@@ -908,8 +908,8 @@ VPlanPtr VPlan::createInitialVPlan(Type *InductionTy,
   VPBasicBlock *MiddleVPBB = new VPBasicBlock("middle.block");
   VPBlockUtils::insertBlockAfter(MiddleVPBB, TopRegion);
 
-  VPBasicBlock *ScalarPH = new VPBasicBlock("scalar.ph");
   if (!RequiresScalarEpilogueCheck) {
+    VPBasicBlock *ScalarPH = new VPBasicBlock("scalar.ph");
     VPBlockUtils::connectBlocks(MiddleVPBB, ScalarPH);
     return Plan;
   }
@@ -923,10 +923,14 @@ VPlanPtr VPlan::createInitialVPlan(Type *InductionTy,
   //    we unconditionally branch to the scalar preheader.  Do nothing.
   // 3) Otherwise, construct a runtime check.
   BasicBlock *IRExitBlock = TheLoop->getUniqueExitBlock();
-  auto *VPExitBlock = VPIRBasicBlock::fromBasicBlock(IRExitBlock);
-  // The connection order corresponds to the operands of the conditional branch.
-  VPBlockUtils::insertBlockAfter(VPExitBlock, MiddleVPBB);
-  VPBlockUtils::connectBlocks(MiddleVPBB, ScalarPH);
+  if (IRExitBlock) {
+    auto *VPExitBlock = VPIRBasicBlock::fromBasicBlock(IRExitBlock);
+    // The connection order corresponds to the operands of the conditional
+    // branch.
+    VPBlockUtils::insertBlockAfter(VPExitBlock, MiddleVPBB);
+    VPBasicBlock *ScalarPH = new VPBasicBlock("scalar.ph");
+    VPBlockUtils::connectBlocks(MiddleVPBB, ScalarPH);
+  }
 
   auto *ScalarLatchTerm = TheLoop->getLoopLatch()->getTerminator();
   // Here we use the same DebugLoc as the scalar loop latch terminator instead
@@ -1044,6 +1048,10 @@ void VPlan::execute(VPTransformState *State) {
       MiddleSuccs.size() == 1 ? MiddleSuccs[0] : MiddleSuccs[1]);
   assert(!isa<VPIRBasicBlock>(ScalarPhVPBB) &&
          "scalar preheader cannot be wrapped already");
+  if (ScalarPhVPBB->getNumSuccessors() != 0) {
+    ScalarPhVPBB = cast<VPBasicBlock>(ScalarPhVPBB->getSuccessors()[1]);
+    MiddleVPBB = cast<VPBasicBlock>(MiddleVPBB->getSuccessors()[1]);
+  }
   replaceVPBBWithIRVPBB(ScalarPhVPBB, ScalarPh);
   replaceVPBBWithIRVPBB(MiddleVPBB, MiddleBB);
 
@@ -1056,7 +1064,10 @@ void VPlan::execute(VPTransformState *State) {
   State->CFG.DTU.applyUpdates({{DominatorTree::Delete, MiddleBB, ScalarPh}});
 
   // Generate code in the loop pre-header and body.
-  for (VPBlockBase *Block : vp_depth_first_shallow(Entry))
+  ReversePostOrderTraversal<VPBlockShallowTraversalWrapper<VPBlockBase *>> RPOT(
+      Entry);
+
+  for (VPBlockBase *Block : RPOT)
     Block->execute(State);
 
   VPBasicBlock *LatchVPBB = getVectorLoopRegion()->getExitingBasicBlock();
@@ -1088,7 +1099,10 @@ void VPlan::execute(VPTransformState *State) {
       // Move the last step to the end of the latch block. This ensures
       // consistent placement of all induction updates.
       Instruction *Inc = cast<Instruction>(Phi->getIncomingValue(1));
-      Inc->moveBefore(VectorLatchBB->getTerminator()->getPrevNode());
+      if (VectorLatchBB->getTerminator() == &*VectorLatchBB->getFirstNonPHI())
+        Inc->moveBefore(VectorLatchBB->getTerminator());
+      else
+        Inc->moveBefore(VectorLatchBB->getTerminator()->getPrevNode());
 
       // Use the steps for the last part as backedge value for the induction.
       if (auto *IV = dyn_cast<VPWidenIntOrFpInductionRecipe>(&R))
