@@ -1422,6 +1422,10 @@ public:
   /// result is also a single scalar.
   bool isSingleScalar() const;
 
+  /// Return the cost of this VPInstruction.
+  InstructionCost computeCost(ElementCount VF,
+                              VPCostContext &Ctx) const override;
+
   /// Returns the symbolic name assigned to the VPInstruction.
   StringRef getName() const { return Name; }
 };

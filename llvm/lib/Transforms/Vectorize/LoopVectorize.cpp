@@ -6653,8 +6653,23 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I,
     if (I->getParent() == TheLoop->getLoopLatch() || VF.isScalar())
       // The back-edge branch will remain, as will all scalar branches.
       return TTI.getCFInstrCost(Instruction::Br, CostKind);
-    // This branch will be eliminated by if-conversion.
-    return 0;
+    else if (Legal->hasUncountableEarlyExit() &&
+             I->getParent() == Legal->getUncountableEarlyExitingBlock()) {
+      // In order to determine whether we take an early exit or not we have to
+      // perform an or reduction of the vector predicate.
+      auto *Vec_i1Ty =
+          VectorType::get(IntegerType::getInt1Ty(RetTy->getContext()), VF);
+      InstructionCost EECost = TTI.getArithmeticReductionCost(
+          Instruction::Or, Vec_i1Ty, std::nullopt, CostKind);
+      // Add on the cost of the conditional branch, which will remain.
+      EECost += TTI.getCFInstrCost(Instruction::Br, CostKind);
+      // TODO: The vector loop early exit block also needs to do work to
+      // determine the first lane that triggered the exit. We should probably
+      // add that somehow, but the cost will be negligible for long loops.
+      return EECost;
+    } else
+      // This branch will be eliminated by if-conversion.
+      return 0;
     // Note: We currently assume zero cost for an unconditional branch inside
     // a predicated block since it will become a fall-through, although we
     // may decide in the future to call TTI for all branches.
@@ -10003,14 +10018,68 @@ static void checkMixedPrecision(Loop *L, OptimizationRemarkEmitter *ORE) {
   }
 }
 
-static bool areRuntimeChecksProfitable(GeneratedRTChecks &Checks,
-                                       VectorizationFactor &VF,
-                                       std::optional<unsigned> VScale, Loop *L,
-                                       PredicatedScalarEvolution &PSE,
-                                       ScalarEpilogueLowering SEL) {
+static InstructionCost calculateEarlyExitCost(const TargetTransformInfo *TTI,
+                                              LoopVectorizationLegality *Legal,
+                                              Loop *L, ElementCount VF) {
+  unsigned NumCttzElemCalls = 0;
+  BasicBlock *OrigEarlyExitingBlock = Legal->getUncountableEarlyExitingBlock();
+  BasicBlock *OrigLoopLatch = L->getLoopLatch();
+
+  auto isUsedInEarlyExitBlock = [&L, &OrigEarlyExitingBlock](Value *V,
+                                                             User *U) -> bool {
+    auto *UI = cast<Instruction>(U);
+    if (!L->contains(UI)) {
+      PHINode *PHI = dyn_cast<PHINode>(UI);
+      assert(PHI && "Expected LCSSA form");
+      int Index = PHI->getBasicBlockIndex(OrigEarlyExitingBlock);
+      if (Index != -1 && PHI->getIncomingValue(Index) == V)
+        return true;
+    }
+    return false;
+  };
+
+  for (BasicBlock *BB : L->blocks()) {
+    for (Instruction &I : *BB) {
+      for (User *U : I.users()) {
+        if (isUsedInEarlyExitBlock(&I, U))
+          NumCttzElemCalls++;
+      }
+    }
+  }
+
+  if (!NumCttzElemCalls)
+    return 0;
+
+  InstructionCost Cost = 0;
+  LLVMContext &Context = L->getHeader()->getContext();
+  // Ideally we'd query the vplan for the canonical IV type, but we don't
+  // have a vplan yet so let's assume it's 64-bit.
+  auto CtzType = IntegerType::getIntNTy(Context, 64);
+  auto VecI1Type = VectorType::get(IntegerType::getInt1Ty(Context), VF);
+
+  IntrinsicCostAttributes Attrs(
+      Intrinsic::experimental_cttz_elts, CtzType,
+      {PoisonValue::get(VecI1Type), ConstantInt::getTrue(Context)});
+  Cost = TTI->getIntrinsicInstrCost(Attrs, TTI::TCK_RecipThroughput);
+  Cost *= NumCttzElemCalls;
+
+  return Cost;
+}
+
+static bool isOutsideLoopWorkProfitable(GeneratedRTChecks &Checks,
+                                        VectorizationFactor &VF,
+                                        std::optional<unsigned> VScale, Loop *L,
+                                        PredicatedScalarEvolution &PSE,
+                                        ScalarEpilogueLowering SEL,
+                                        InstructionCost EarlyExitCost) {
   InstructionCost CheckCost = Checks.getCost();
   if (!CheckCost.isValid())
     return false;
+
+  // Add on the cost of work required in the vector early exit block, if one
+  // exists.
+  if (EarlyExitCost.isValid())
+    CheckCost += EarlyExitCost;
 
   // When interleaving only scalar and vector cost will be equal, which in turn
   // would lead to a divide by 0. Fall back to hard threshold.
@@ -10212,7 +10281,7 @@ bool LoopVectorizePass::processLoop(Loop *L) {
         // iteration count is low. However, setting the epilogue policy to
         // `CM_ScalarEpilogueNotAllowedLowTripLoop` prevents vectorizing loops
         // with runtime checks. It's more effective to let
-        // `areRuntimeChecksProfitable` determine if vectorization is beneficial
+        // `isOutsideLoopWorkProfitable` determine if vectorization is beneficial
         // for the loop.
         if (SEL != CM_ScalarEpilogueNotNeededUsePredicate)
           SEL = CM_ScalarEpilogueNotAllowedLowTripLoop;
@@ -10308,12 +10377,16 @@ bool LoopVectorizePass::processLoop(Loop *L) {
     if (VF.Width.isVector() || SelectedIC > 1)
       Checks.create(L, *LVL.getLAI(), PSE.getPredicate(), VF.Width, SelectedIC);
 
+    InstructionCost EarlyExitCost = InstructionCost::getInvalid();
+    if (VF.Width.isVector() && LVL.hasUncountableEarlyExit())
+      EarlyExitCost = calculateEarlyExitCost(TTI, &LVL, L, VF.Width);
+
     // Check if it is profitable to vectorize with runtime checks.
     bool ForceVectorization =
         Hints.getForce() == LoopVectorizeHints::FK_Enabled;
     if (!ForceVectorization &&
-        !areRuntimeChecksProfitable(Checks, VF, getVScaleForTuning(L, *TTI), L,
-                                    PSE, SEL)) {
+        !isOutsideLoopWorkProfitable(Checks, VF, getVScaleForTuning(L, *TTI), L,
+                                     PSE, SEL, EarlyExitCost)) {
       ORE->emit([&]() {
         return OptimizationRemarkAnalysisAliasing(
                    DEBUG_TYPE, "CantReorderMemOps", L->getStartLoc(),

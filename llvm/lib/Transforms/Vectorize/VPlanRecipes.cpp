@@ -388,6 +388,30 @@ VPInstruction::VPInstruction(unsigned Opcode,
   assert(isFPMathOp() && "this op can't take fast-math flags");
 }
 
+InstructionCost VPInstruction::computeCost(ElementCount VF,
+                                           VPCostContext &Ctx) const {
+  TTI::TargetCostKind CostKind = TTI::TCK_RecipThroughput;
+
+  switch (getOpcode()) {
+  case VPInstruction::AnyOf: {
+    auto *VecI1Ty = VectorType::get(Type::getInt1Ty(Ctx.LLVMCtx), VF);
+    return Ctx.TTI.getArithmeticReductionCost(
+        Instruction::Or, VecI1Ty, std::nullopt, CostKind);
+  }
+  case VPInstruction::ExtractHighestActive: {
+    auto *VecI1Ty = VectorType::get(Type::getInt1Ty(Ctx.LLVMCtx), VF);
+    auto CtzType = ToVectorTy(Ctx.Types.inferScalarType(getOperand(0)), VF);
+    IntrinsicCostAttributes Attrs(
+        Intrinsic::experimental_cttz_elts, CtzType,
+        {PoisonValue::get(VecI1Ty), ConstantInt::getTrue(Ctx.LLVMCtx)});
+    return Ctx.TTI.getIntrinsicInstrCost(Attrs, TTI::TCK_RecipThroughput);
+  }
+  default:
+    // TODO: Fill out other opcodes!
+    return 0;
+  }
+}
+
 bool VPInstruction::doesGeneratePerAllLanes() const {
   return Opcode == VPInstruction::PtrAdd && !vputils::onlyFirstLaneUsed(this);
 }

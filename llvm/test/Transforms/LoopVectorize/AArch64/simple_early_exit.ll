@@ -15,7 +15,8 @@ define i64 @same_exit_block_pre_inc_use1() #1 {
 ; CHECK-NEXT:    call void @init_mem(ptr [[P2]], i64 1024)
 ; CHECK-NEXT:    [[TMP0:%.*]] = call i64 @llvm.vscale.i64()
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul i64 [[TMP0]], 16
-; CHECK-NEXT:    [[MIN_ITERS_CHECK:%.*]] = icmp ult i64 64, [[TMP1]]
+; CHECK-NEXT:    [[TMP17:%.*]] = call i64 @llvm.umax.i64(i64 32, i64 [[TMP1]])
+; CHECK-NEXT:    [[MIN_ITERS_CHECK:%.*]] = icmp ult i64 64, [[TMP17]]
 ; CHECK-NEXT:    br i1 [[MIN_ITERS_CHECK]], label [[SCALAR_PH:%.*]], label [[VECTOR_PH:%.*]]
 ; CHECK:       vector.ph:
 ; CHECK-NEXT:    [[TMP2:%.*]] = call i64 @llvm.vscale.i64()
@@ -111,6 +112,7 @@ define i64 @same_exit_block_pre_inc_use4() #1 {
 ; CHECK-NEXT:    call void @init_mem(ptr [[P2]], i64 1024)
 ; CHECK-NEXT:    [[TMP10:%.*]] = call i64 @llvm.vscale.i64()
 ; CHECK-NEXT:    [[TMP11:%.*]] = mul i64 [[TMP10]], 2
+; CHECK-NEXT:    [[TMP19:%.*]] = call i64 @llvm.umax.i64(i64 4, i64 [[TMP11]])
 ; CHECK-NEXT:    br i1 false, label [[SCALAR_PH:%.*]], label [[VECTOR_PH:%.*]]
 ; CHECK:       vector.ph:
 ; CHECK-NEXT:    [[TMP12:%.*]] = call i64 @llvm.vscale.i64()
@@ -206,6 +208,7 @@ define i64 @loop_contains_safe_call() #1 {
 ; CHECK-NEXT:    call void @init_mem(ptr [[P2]], i64 1024)
 ; CHECK-NEXT:    [[TMP0:%.*]] = call i64 @llvm.vscale.i64()
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul i64 [[TMP0]], 4
+; CHECK-NEXT:    [[TMP16:%.*]] = call i64 @llvm.umax.i64(i64 8, i64 [[TMP1]])
 ; CHECK-NEXT:    br i1 false, label [[SCALAR_PH:%.*]], label [[VECTOR_PH:%.*]]
 ; CHECK:       vector.ph:
 ; CHECK-NEXT:    [[TMP2:%.*]] = call i64 @llvm.vscale.i64()
@@ -295,6 +298,7 @@ define i64 @loop_contains_safe_div() #1 {
 ; CHECK-NEXT:    call void @init_mem(ptr [[P2]], i64 1024)
 ; CHECK-NEXT:    [[TMP0:%.*]] = call i64 @llvm.vscale.i64()
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul i64 [[TMP0]], 4
+; CHECK-NEXT:    [[TMP16:%.*]] = call i64 @llvm.umax.i64(i64 8, i64 [[TMP1]])
 ; CHECK-NEXT:    br i1 false, label [[SCALAR_PH:%.*]], label [[VECTOR_PH:%.*]]
 ; CHECK:       vector.ph:
 ; CHECK-NEXT:    [[TMP2:%.*]] = call i64 @llvm.vscale.i64()
