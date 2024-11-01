@@ -62,6 +62,7 @@ bool VPRecipeBase::mayWriteToMemory() const {
     case VPInstruction::CalculateTripCountMinusVF:
     case VPInstruction::CanonicalIVIncrementForPart:
     case VPInstruction::ExtractFromEnd:
+    case VPInstruction::ExtractHighestActive:
     case VPInstruction::FirstOrderRecurrenceSplice:
     case VPInstruction::LogicalAnd:
     case VPInstruction::AnyOf:
@@ -632,6 +633,13 @@ Value *VPInstruction::generate(VPTransformState &State) {
 
     return ReducedPartRdx;
   }
+  case VPInstruction::ExtractHighestActive: {
+    Value *Vec = State.get(getOperand(0));
+    Value *Mask = State.get(getOperand(1));
+    Value *Ctz =
+        Builder.CreateCountTrailingZeroElems(Builder.getInt64Ty(), Mask);
+    return Builder.CreateExtractElement(Vec, Ctz);
+  }
   case VPInstruction::ExtractFromEnd: {
     auto *CI = cast<ConstantInt>(getOperand(1)->getLiveInIRValue());
     unsigned Offset = CI->getZExtValue();
@@ -692,6 +700,7 @@ Value *VPInstruction::generate(VPTransformState &State) {
 
 bool VPInstruction::isVectorToScalar() const {
   return getOpcode() == VPInstruction::ExtractFromEnd ||
+         getOpcode() == VPInstruction::ExtractHighestActive ||
          getOpcode() == VPInstruction::ComputeReductionResult ||
          getOpcode() == VPInstruction::AnyOf;
 }
@@ -842,6 +851,9 @@ void VPInstruction::print(raw_ostream &O, const Twine &Indent,
   case VPInstruction::ExtractFromEnd:
     O << "extract-from-end";
     break;
+  case VPInstruction::ExtractHighestActive:
+    O << "extract-highest-active";
+    break;
   case VPInstruction::ComputeReductionResult:
     O << "compute-reduction-result";
     break;
@@ -872,6 +884,9 @@ void VPIRInstruction::execute(VPTransformState &State) {
   assert((isa<PHINode>(&I) || getNumOperands() == 0) &&
          "Only PHINodes can have extra operands");
   for (const auto &[Idx, ExitValue] : enumerate(operands())) {
+    if (ExitValue->isNull())
+      continue;
+
     auto Lane = vputils::isUniformAfterVectorization(ExitValue)
                     ? VPLane::getFirstLane()
                     : VPLane::getLastLaneForVF(State.VF);

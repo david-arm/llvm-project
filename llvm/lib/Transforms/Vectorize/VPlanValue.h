@@ -55,6 +55,8 @@ class VPValue {
 
   SmallVector<VPUser *, 1> Users;
 
+  static VPValue *Null;
+
 protected:
   // Hold the underlying Value, if any, attached to this VPValue.
   Value *UnderlyingVal;
@@ -188,6 +190,10 @@ public:
     assert(!UnderlyingVal && "Underlying Value is already set.");
     UnderlyingVal = Val;
   }
+
+  static VPValue *getNull() { return Null; }
+
+  bool isNull() const { return this == Null; }
 };
 
 typedef DenseMap<Value *, VPValue *> Value2VPValueTy;

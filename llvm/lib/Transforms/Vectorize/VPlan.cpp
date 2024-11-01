@@ -73,6 +73,9 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, const VPValue &V) {
 }
 #endif
 
+static VPValue NullValue;
+VPValue *VPValue::Null = &NullValue;
+
 Value *VPLane::getAsRuntimeExpr(IRBuilderBase &Builder,
                                 const ElementCount &VF) const {
   switch (LaneKind) {

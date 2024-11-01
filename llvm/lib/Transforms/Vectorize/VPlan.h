@@ -1274,6 +1274,7 @@ public:
     // to extract as second operand, counting from the end starting with 1 for
     // last. The second operand must be a positive constant and <= VF.
     ExtractFromEnd,
+    ExtractHighestActive,
     LogicalAnd, // Non-poison propagating logical And.
     // Add an offset in bytes (second operand) to a base pointer (first
     // operand). Only generates scalar values (either for the first lane only or

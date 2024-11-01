@@ -60,21 +60,52 @@ define i64 @same_exit_block_pre_inc_use1_too_small_allocas() {
 ; NO_FAULT-NEXT:    [[P2:%.*]] = alloca [42 x i8], align 1
 ; NO_FAULT-NEXT:    call void @init_mem(ptr [[P1]], i64 1024)
 ; NO_FAULT-NEXT:    call void @init_mem(ptr [[P2]], i64 1024)
+; NO_FAULT-NEXT:    br i1 false, label [[SCALAR_PH:%.*]], label [[VECTOR_PH:%.*]]
+; NO_FAULT:       vector.ph:
 ; NO_FAULT-NEXT:    br label [[LOOP:%.*]]
+; NO_FAULT:       vector.body:
+; NO_FAULT-NEXT:    [[INDEX1:%.*]] = phi i64 [ 0, [[VECTOR_PH]] ], [ [[INDEX_NEXT3:%.*]], [[LOOP]] ]
+; NO_FAULT-NEXT:    [[OFFSET_IDX:%.*]] = add i64 3, [[INDEX1]]
+; NO_FAULT-NEXT:    [[TMP0:%.*]] = add i64 [[OFFSET_IDX]], 0
+; NO_FAULT-NEXT:    [[TMP1:%.*]] = getelementptr inbounds i8, ptr [[P1]], i64 [[TMP0]]
+; NO_FAULT-NEXT:    [[TMP2:%.*]] = getelementptr inbounds i8, ptr [[TMP1]], i32 0
+; NO_FAULT-NEXT:    [[WIDE_LOAD:%.*]] = load <4 x i8>, ptr [[TMP2]], align 1
+; NO_FAULT-NEXT:    [[TMP3:%.*]] = getelementptr inbounds i8, ptr [[P2]], i64 [[TMP0]]
+; NO_FAULT-NEXT:    [[TMP4:%.*]] = getelementptr inbounds i8, ptr [[TMP3]], i32 0
+; NO_FAULT-NEXT:    [[WIDE_LOAD2:%.*]] = load <4 x i8>, ptr [[TMP4]], align 1
+; NO_FAULT-NEXT:    [[TMP5:%.*]] = icmp eq <4 x i8> [[WIDE_LOAD]], [[WIDE_LOAD2]]
+; NO_FAULT-NEXT:    [[INDEX_NEXT3]] = add nuw i64 [[INDEX1]], 4
+; NO_FAULT-NEXT:    [[TMP6:%.*]] = xor <4 x i1> [[TMP5]], <i1 true, i1 true, i1 true, i1 true>
+; NO_FAULT-NEXT:    [[TMP7:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP6]])
+; NO_FAULT-NEXT:    [[TMP8:%.*]] = icmp eq i64 [[INDEX_NEXT3]], 64
+; NO_FAULT-NEXT:    [[TMP11:%.*]] = or i1 [[TMP7]], [[TMP8]]
+; NO_FAULT-NEXT:    br i1 [[TMP11]], label [[MIDDLE_SPLIT:%.*]], label [[LOOP]], !llvm.loop [[LOOP0:![0-9]+]]
+; NO_FAULT:       middle.split:
+; NO_FAULT-NEXT:    br i1 [[TMP7]], label [[VECTOR_EARLY_EXIT:%.*]], label [[VECTOR_BODY_SPLIT:%.*]]
+; NO_FAULT:       vector.early.exit:
+; NO_FAULT-NEXT:    [[TMP9:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.v4i1(<4 x i1> [[TMP6]], i1 true)
+; NO_FAULT-NEXT:    [[TMP10:%.*]] = add i64 [[TMP9]], [[INDEX1]]
+; NO_FAULT-NEXT:    [[IND_EARLY_ESCAPE:%.*]] = add i64 3, [[TMP10]]
+; NO_FAULT-NEXT:    br label [[LOOP_END:%.*]]
+; NO_FAULT:       middle.block:
+; NO_FAULT-NEXT:    br i1 true, label [[LOOP_END]], label [[SCALAR_PH]]
+; NO_FAULT:       scalar.ph:
+; NO_FAULT-NEXT:    [[BC_RESUME_VAL:%.*]] = phi i64 [ 67, [[VECTOR_BODY_SPLIT]] ], [ 3, [[ENTRY:%.*]] ]
+; NO_FAULT-NEXT:    br label [[LOOP1:%.*]]
 ; NO_FAULT:       loop:
-; NO_FAULT-NEXT:    [[INDEX:%.*]] = phi i64 [ [[INDEX_NEXT:%.*]], [[LOOP_INC:%.*]] ], [ 3, [[ENTRY:%.*]] ]
+; NO_FAULT-NEXT:    [[INDEX:%.*]] = phi i64 [ [[INDEX_NEXT:%.*]], [[LOOP_INC:%.*]] ], [ [[BC_RESUME_VAL]], [[SCALAR_PH]] ]
 ; NO_FAULT-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds i8, ptr [[P1]], i64 [[INDEX]]
 ; NO_FAULT-NEXT:    [[LD1:%.*]] = load i8, ptr [[ARRAYIDX]], align 1
 ; NO_FAULT-NEXT:    [[ARRAYIDX1:%.*]] = getelementptr inbounds i8, ptr [[P2]], i64 [[INDEX]]
 ; NO_FAULT-NEXT:    [[LD2:%.*]] = load i8, ptr [[ARRAYIDX1]], align 1
 ; NO_FAULT-NEXT:    [[CMP3:%.*]] = icmp eq i8 [[LD1]], [[LD2]]
-; NO_FAULT-NEXT:    br i1 [[CMP3]], label [[LOOP_INC]], label [[LOOP_END:%.*]]
+; NO_FAULT-NEXT:    br i1 [[CMP3]], label [[LOOP_INC]], label [[LOOP_END]]
 ; NO_FAULT:       loop.inc:
 ; NO_FAULT-NEXT:    [[INDEX_NEXT]] = add i64 [[INDEX]], 1
 ; NO_FAULT-NEXT:    [[EXITCOND:%.*]] = icmp ne i64 [[INDEX_NEXT]], 67
-; NO_FAULT-NEXT:    br i1 [[EXITCOND]], label [[LOOP]], label [[LOOP_END]]
+; NO_FAULT-NEXT:    br i1 [[EXITCOND]], label [[LOOP1]], label [[LOOP_END]], !llvm.loop [[LOOP3:![0-9]+]]
 ; NO_FAULT:       loop.end:
-; NO_FAULT-NEXT:    [[RETVAL:%.*]] = phi i64 [ [[INDEX]], [[LOOP]] ], [ 67, [[LOOP_INC]] ]
+; NO_FAULT-NEXT:    [[RETVAL:%.*]] = phi i64 [ [[INDEX]], [[LOOP1]] ], [ 67, [[LOOP_INC]] ], [ 67, [[VECTOR_BODY_SPLIT]] ], [ [[IND_EARLY_ESCAPE]], [[VECTOR_EARLY_EXIT]] ]
 ; NO_FAULT-NEXT:    ret i64 [[RETVAL]]
 ;
 entry:
@@ -148,21 +179,52 @@ define i64 @same_exit_block_pre_inc_use1_too_small_deref_ptrs(ptr dereferenceabl
 ; NO_FAULT-LABEL: define i64 @same_exit_block_pre_inc_use1_too_small_deref_ptrs(
 ; NO_FAULT-SAME: ptr dereferenceable(42) [[P1:%.*]], ptr dereferenceable(42) [[P2:%.*]]) {
 ; NO_FAULT-NEXT:  entry:
+; NO_FAULT-NEXT:    br i1 false, label [[SCALAR_PH:%.*]], label [[VECTOR_PH:%.*]]
+; NO_FAULT:       vector.ph:
 ; NO_FAULT-NEXT:    br label [[LOOP:%.*]]
+; NO_FAULT:       vector.body:
+; NO_FAULT-NEXT:    [[INDEX1:%.*]] = phi i64 [ 0, [[VECTOR_PH]] ], [ [[INDEX_NEXT3:%.*]], [[LOOP]] ]
+; NO_FAULT-NEXT:    [[OFFSET_IDX:%.*]] = add i64 3, [[INDEX1]]
+; NO_FAULT-NEXT:    [[TMP0:%.*]] = add i64 [[OFFSET_IDX]], 0
+; NO_FAULT-NEXT:    [[TMP1:%.*]] = getelementptr inbounds i8, ptr [[P1]], i64 [[TMP0]]
+; NO_FAULT-NEXT:    [[TMP2:%.*]] = getelementptr inbounds i8, ptr [[TMP1]], i32 0
+; NO_FAULT-NEXT:    [[WIDE_LOAD:%.*]] = load <4 x i8>, ptr [[TMP2]], align 1
+; NO_FAULT-NEXT:    [[TMP3:%.*]] = getelementptr inbounds i8, ptr [[P2]], i64 [[TMP0]]
+; NO_FAULT-NEXT:    [[TMP4:%.*]] = getelementptr inbounds i8, ptr [[TMP3]], i32 0
+; NO_FAULT-NEXT:    [[WIDE_LOAD2:%.*]] = load <4 x i8>, ptr [[TMP4]], align 1
+; NO_FAULT-NEXT:    [[TMP5:%.*]] = icmp eq <4 x i8> [[WIDE_LOAD]], [[WIDE_LOAD2]]
+; NO_FAULT-NEXT:    [[INDEX_NEXT3]] = add nuw i64 [[INDEX1]], 4
+; NO_FAULT-NEXT:    [[TMP6:%.*]] = xor <4 x i1> [[TMP5]], <i1 true, i1 true, i1 true, i1 true>
+; NO_FAULT-NEXT:    [[TMP7:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP6]])
+; NO_FAULT-NEXT:    [[TMP8:%.*]] = icmp eq i64 [[INDEX_NEXT3]], 64
+; NO_FAULT-NEXT:    [[TMP11:%.*]] = or i1 [[TMP7]], [[TMP8]]
+; NO_FAULT-NEXT:    br i1 [[TMP11]], label [[MIDDLE_SPLIT:%.*]], label [[LOOP]], !llvm.loop [[LOOP4:![0-9]+]]
+; NO_FAULT:       middle.split:
+; NO_FAULT-NEXT:    br i1 [[TMP7]], label [[VECTOR_EARLY_EXIT:%.*]], label [[VECTOR_BODY_SPLIT:%.*]]
+; NO_FAULT:       vector.early.exit:
+; NO_FAULT-NEXT:    [[TMP9:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.v4i1(<4 x i1> [[TMP6]], i1 true)
+; NO_FAULT-NEXT:    [[TMP10:%.*]] = add i64 [[TMP9]], [[INDEX1]]
+; NO_FAULT-NEXT:    [[IND_EARLY_ESCAPE:%.*]] = add i64 3, [[TMP10]]
+; NO_FAULT-NEXT:    br label [[LOOP_END:%.*]]
+; NO_FAULT:       middle.block:
+; NO_FAULT-NEXT:    br i1 true, label [[LOOP_END]], label [[SCALAR_PH]]
+; NO_FAULT:       scalar.ph:
+; NO_FAULT-NEXT:    [[BC_RESUME_VAL:%.*]] = phi i64 [ 67, [[VECTOR_BODY_SPLIT]] ], [ 3, [[ENTRY:%.*]] ]
+; NO_FAULT-NEXT:    br label [[LOOP1:%.*]]
 ; NO_FAULT:       loop:
-; NO_FAULT-NEXT:    [[INDEX:%.*]] = phi i64 [ [[INDEX_NEXT:%.*]], [[LOOP_INC:%.*]] ], [ 3, [[ENTRY:%.*]] ]
+; NO_FAULT-NEXT:    [[INDEX:%.*]] = phi i64 [ [[INDEX_NEXT:%.*]], [[LOOP_INC:%.*]] ], [ [[BC_RESUME_VAL]], [[SCALAR_PH]] ]
 ; NO_FAULT-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds i8, ptr [[P1]], i64 [[INDEX]]
 ; NO_FAULT-NEXT:    [[LD1:%.*]] = load i8, ptr [[ARRAYIDX]], align 1
 ; NO_FAULT-NEXT:    [[ARRAYIDX1:%.*]] = getelementptr inbounds i8, ptr [[P2]], i64 [[INDEX]]
 ; NO_FAULT-NEXT:    [[LD2:%.*]] = load i8, ptr [[ARRAYIDX1]], align 1
 ; NO_FAULT-NEXT:    [[CMP3:%.*]] = icmp eq i8 [[LD1]], [[LD2]]
-; NO_FAULT-NEXT:    br i1 [[CMP3]], label [[LOOP_INC]], label [[LOOP_END:%.*]]
+; NO_FAULT-NEXT:    br i1 [[CMP3]], label [[LOOP_INC]], label [[LOOP_END]]
 ; NO_FAULT:       loop.inc:
 ; NO_FAULT-NEXT:    [[INDEX_NEXT]] = add i64 [[INDEX]], 1
 ; NO_FAULT-NEXT:    [[EXITCOND:%.*]] = icmp ne i64 [[INDEX_NEXT]], 67
-; NO_FAULT-NEXT:    br i1 [[EXITCOND]], label [[LOOP]], label [[LOOP_END]]
+; NO_FAULT-NEXT:    br i1 [[EXITCOND]], label [[LOOP1]], label [[LOOP_END]], !llvm.loop [[LOOP5:![0-9]+]]
 ; NO_FAULT:       loop.end:
-; NO_FAULT-NEXT:    [[RETVAL:%.*]] = phi i64 [ [[INDEX]], [[LOOP]] ], [ 67, [[LOOP_INC]] ]
+; NO_FAULT-NEXT:    [[RETVAL:%.*]] = phi i64 [ [[INDEX]], [[LOOP1]] ], [ 67, [[LOOP_INC]] ], [ 67, [[VECTOR_BODY_SPLIT]] ], [ [[IND_EARLY_ESCAPE]], [[VECTOR_EARLY_EXIT]] ]
 ; NO_FAULT-NEXT:    ret i64 [[RETVAL]]
 ;
 entry:
@@ -251,7 +313,7 @@ define i64 @same_exit_block_pre_inc_use1_unknown_ptrs(ptr %p1, ptr %p2) {
 ; NO_FAULT-NEXT:    [[TMP7:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP6]])
 ; NO_FAULT-NEXT:    [[TMP8:%.*]] = icmp eq i64 [[INDEX_NEXT3]], 64
 ; NO_FAULT-NEXT:    [[TMP9:%.*]] = or i1 [[TMP7]], [[TMP8]]
-; NO_FAULT-NEXT:    br i1 [[TMP9]], label [[MIDDLE_SPLIT:%.*]], label [[LOOP]], !llvm.loop [[LOOP0:![0-9]+]]
+; NO_FAULT-NEXT:    br i1 [[TMP9]], label [[MIDDLE_SPLIT:%.*]], label [[LOOP]], !llvm.loop [[LOOP6:![0-9]+]]
 ; NO_FAULT:       middle.split:
 ; NO_FAULT-NEXT:    br i1 [[TMP7]], label [[VECTOR_EARLY_EXIT:%.*]], label [[VECTOR_BODY_SPLIT:%.*]]
 ; NO_FAULT:       vector.early.exit:
@@ -272,7 +334,7 @@ define i64 @same_exit_block_pre_inc_use1_unknown_ptrs(ptr %p1, ptr %p2) {
 ; NO_FAULT:       loop.inc:
 ; NO_FAULT-NEXT:    [[INDEX_NEXT]] = add i64 [[INDEX]], 1
 ; NO_FAULT-NEXT:    [[EXITCOND:%.*]] = icmp ne i64 [[INDEX_NEXT]], 67
-; NO_FAULT-NEXT:    br i1 [[EXITCOND]], label [[LOOP1]], label [[LOOP_END]], !llvm.loop [[LOOP3:![0-9]+]]
+; NO_FAULT-NEXT:    br i1 [[EXITCOND]], label [[LOOP1]], label [[LOOP_END]], !llvm.loop [[LOOP7:![0-9]+]]
 ; NO_FAULT:       loop.end:
 ; NO_FAULT-NEXT:    [[RETVAL:%.*]] = phi i64 [ 1, [[LOOP1]] ], [ 0, [[LOOP_INC]] ], [ 0, [[VECTOR_BODY_SPLIT]] ], [ 1, [[VECTOR_EARLY_EXIT]] ]
 ; NO_FAULT-NEXT:    ret i64 [[RETVAL]]
@@ -303,4 +365,8 @@ loop.end:
 ; NO_FAULT: [[META1]] = !{!"llvm.loop.isvectorized", i32 1}
 ; NO_FAULT: [[META2]] = !{!"llvm.loop.unroll.runtime.disable"}
 ; NO_FAULT: [[LOOP3]] = distinct !{[[LOOP3]], [[META2]], [[META1]]}
+; NO_FAULT: [[LOOP4]] = distinct !{[[LOOP4]], [[META1]], [[META2]]}
+; NO_FAULT: [[LOOP5]] = distinct !{[[LOOP5]], [[META2]], [[META1]]}
+; NO_FAULT: [[LOOP6]] = distinct !{[[LOOP6]], [[META1]], [[META2]]}
+; NO_FAULT: [[LOOP7]] = distinct !{[[LOOP7]], [[META2]], [[META1]]}
 ;.
