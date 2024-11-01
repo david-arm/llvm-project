@@ -469,14 +469,23 @@ void VPIRBasicBlock::execute(VPTransformState *State) {
     LLVM_DEBUG(dbgs() << "LV: draw edge from" << PredBB->getName() << '\n');
 
     auto *PredBBTerminator = PredBB->getTerminator();
-    auto *TermBr = cast<BranchInst>(PredBBTerminator);
-    // Set each forward successor here when it is created, excluding
-    // backedges. A backward successor is set when the branch is created.
-    const auto &PredVPSuccessors = PredVPBB->getHierarchicalSuccessors();
-    unsigned idx = PredVPSuccessors.front() == this ? 0 : 1;
-    assert(!TermBr->getSuccessor(idx) &&
-           "Trying to reset an existing successor block.");
-    TermBr->setSuccessor(idx, IRBB);
+    if (isa<UnreachableInst>(PredBBTerminator)) {
+      assert(PredVPBB->getHierarchicalSuccessors().size() == 1 &&
+             "Predecessor ending w/o branch must have single successor.");
+      DebugLoc DL = PredBBTerminator->getDebugLoc();
+      PredBBTerminator->eraseFromParent();
+      auto *Br = BranchInst::Create(IRBB, PredBB);
+      Br->setDebugLoc(DL);
+    } else {
+      auto *TermBr = cast<BranchInst>(PredBBTerminator);
+      // Set each forward successor here when it is created, excluding
+      // backedges. A backward successor is set when the branch is created.
+      const auto &PredVPSuccessors = PredVPBB->getHierarchicalSuccessors();
+      unsigned idx = PredVPSuccessors.front() == this ? 0 : 1;
+      assert(!TermBr->getSuccessor(idx) &&
+             "Trying to reset an existing successor block.");
+      TermBr->setSuccessor(idx, IRBB);
+    }
     State->CFG.DTU.applyUpdates({{DominatorTree::Insert, PredBB, IRBB}});
   }
 }
@@ -887,8 +896,7 @@ VPlanPtr VPlan::createInitialVPlan(Type *InductionTy,
   // uncountable exits whilst also ensuring the symbolic maximum and known
   // back-edge taken count remain identical for loops with countable exits.
   const SCEV *BackedgeTakenCountSCEV = PSE.getSymbolicMaxBackedgeTakenCount();
-  assert((!isa<SCEVCouldNotCompute>(BackedgeTakenCountSCEV) &&
-          BackedgeTakenCountSCEV == PSE.getBackedgeTakenCount()) &&
+  assert(!isa<SCEVCouldNotCompute>(BackedgeTakenCountSCEV) &&
          "Invalid loop count");
   ScalarEvolution &SE = *PSE.getSE();
   const SCEV *TripCount = SE.getTripCountFromExitCount(BackedgeTakenCountSCEV,
@@ -906,10 +914,11 @@ VPlanPtr VPlan::createInitialVPlan(Type *InductionTy,
 
   VPBlockUtils::insertBlockAfter(TopRegion, VecPreheader);
   VPBasicBlock *MiddleVPBB = new VPBasicBlock("middle.block");
+  Plan->setMiddleBlock(MiddleVPBB);
   VPBlockUtils::insertBlockAfter(MiddleVPBB, TopRegion);
 
+  VPBasicBlock *ScalarPH = new VPBasicBlock("scalar.ph");
   if (!RequiresScalarEpilogueCheck) {
-    VPBasicBlock *ScalarPH = new VPBasicBlock("scalar.ph");
     VPBlockUtils::connectBlocks(MiddleVPBB, ScalarPH);
     return Plan;
   }
@@ -922,15 +931,11 @@ VPlanPtr VPlan::createInitialVPlan(Type *InductionTy,
   // 2) If we require a scalar epilogue, there is no conditional branch as
   //    we unconditionally branch to the scalar preheader.  Do nothing.
   // 3) Otherwise, construct a runtime check.
-  BasicBlock *IRExitBlock = TheLoop->getUniqueExitBlock();
-  if (IRExitBlock) {
-    auto *VPExitBlock = VPIRBasicBlock::fromBasicBlock(IRExitBlock);
-    // The connection order corresponds to the operands of the conditional
-    // branch.
-    VPBlockUtils::insertBlockAfter(VPExitBlock, MiddleVPBB);
-    VPBasicBlock *ScalarPH = new VPBasicBlock("scalar.ph");
-    VPBlockUtils::connectBlocks(MiddleVPBB, ScalarPH);
-  }
+  BasicBlock *IRExitBlock = TheLoop->getUniqueLatchExitBlock();
+  VPIRBasicBlock *VPExitBlock = VPIRBasicBlock::fromBasicBlock(IRExitBlock);
+  // The connection order corresponds to the operands of the conditional branch.
+  VPBlockUtils::insertBlockAfter(VPExitBlock, MiddleVPBB);
+  VPBlockUtils::connectBlocks(MiddleVPBB, ScalarPH);
 
   auto *ScalarLatchTerm = TheLoop->getLoopLatch()->getTerminator();
   // Here we use the same DebugLoc as the scalar loop latch terminator instead
@@ -1002,7 +1007,7 @@ void VPlan::prepareToExecute(Value *TripCountV, Value *VectorTripCountV,
 /// VPBB are moved to the end of the newly created VPIRBasicBlock. VPBB must
 /// have a single predecessor, which is rewired to the new VPIRBasicBlock. All
 /// successors of VPBB, if any, are rewired to the new VPIRBasicBlock.
-static void replaceVPBBWithIRVPBB(VPBasicBlock *VPBB, BasicBlock *IRBB) {
+VPIRBasicBlock *replaceVPBBWithIRVPBB(VPBasicBlock *VPBB, BasicBlock *IRBB) {
   VPIRBasicBlock *IRVPBB = VPIRBasicBlock::fromBasicBlock(IRBB);
   for (auto &R : make_early_inc_range(*VPBB)) {
     assert(!R.isPhi() && "Tried to move phi recipe to end of block");
@@ -1010,8 +1015,8 @@ static void replaceVPBBWithIRVPBB(VPBasicBlock *VPBB, BasicBlock *IRBB) {
   }
 
   VPBlockUtils::reassociateBlocks(VPBB, IRVPBB);
-
   delete VPBB;
+  return IRVPBB;
 }
 
 /// Generate the code inside the preheader and body of the vectorized loop.
@@ -1034,13 +1039,14 @@ void VPlan::execute(VPTransformState *State) {
   // skeleton creation, so we can only create the VPIRBasicBlocks now during
   // VPlan execution rather than earlier during VPlan construction.
   BasicBlock *MiddleBB = State->CFG.ExitBB;
-  VPBasicBlock *MiddleVPBB =
-      cast<VPBasicBlock>(getVectorLoopRegion()->getSingleSuccessor());
+
   // Find the VPBB for the scalar preheader, relying on the current structure
   // when creating the middle block and its successrs: if there's a single
   // predecessor, it must be the scalar preheader. Otherwise, the second
   // successor is the scalar preheader.
   BasicBlock *ScalarPh = MiddleBB->getSingleSuccessor();
+  assert(getMiddleBlock() && "What happened to the middle block?!");
+
   auto &MiddleSuccs = MiddleVPBB->getSuccessors();
   assert((MiddleSuccs.size() == 1 || MiddleSuccs.size() == 2) &&
          "middle block has unexpected successors");
@@ -1048,12 +1054,9 @@ void VPlan::execute(VPTransformState *State) {
       MiddleSuccs.size() == 1 ? MiddleSuccs[0] : MiddleSuccs[1]);
   assert(!isa<VPIRBasicBlock>(ScalarPhVPBB) &&
          "scalar preheader cannot be wrapped already");
-  if (ScalarPhVPBB->getNumSuccessors() != 0) {
-    ScalarPhVPBB = cast<VPBasicBlock>(ScalarPhVPBB->getSuccessors()[1]);
-    MiddleVPBB = cast<VPBasicBlock>(MiddleVPBB->getSuccessors()[1]);
-  }
   replaceVPBBWithIRVPBB(ScalarPhVPBB, ScalarPh);
-  replaceVPBBWithIRVPBB(MiddleVPBB, MiddleBB);
+  VPIRBasicBlock *NewMiddle = replaceVPBBWithIRVPBB(MiddleVPBB, MiddleBB);
+  setMiddleBlock(NewMiddle);
 
   // Disconnect the middle block from its single successor (the scalar loop
   // header) in both the CFG and DT. The branch will be recreated during VPlan
@@ -1072,6 +1075,10 @@ void VPlan::execute(VPTransformState *State) {
 
   VPBasicBlock *LatchVPBB = getVectorLoopRegion()->getExitingBasicBlock();
   BasicBlock *VectorLatchBB = State->CFG.VPBB2IRBB[LatchVPBB];
+
+  if (!getVectorLoopRegion()->getSingleSuccessor())
+    VectorLatchBB =
+        cast<BranchInst>(VectorLatchBB->getTerminator())->getSuccessor(1);
 
   // Fix the latch value of canonical, reduction and first-order recurrences
   // phis in the vector loop.
@@ -1276,8 +1283,17 @@ VPlan *VPlan::duplicate() {
   VPBasicBlock *NewPreheader = Preheader->clone();
   const auto &[NewEntry, __] = cloneFrom(Entry);
 
+  VPBasicBlock *NewMiddleVPBB = nullptr;
+  for (VPBlockBase *BB : vp_depth_first_shallow(NewEntry)) {
+    if (BB->getName() == "middle.block")
+      NewMiddleVPBB = cast<VPBasicBlock>(BB);
+  }
+  assert(NewMiddleVPBB && "Couldn't find the middle block!");
+
   // Create VPlan, clone live-ins and remap operands in the cloned blocks.
   auto *NewPlan = new VPlan(NewPreheader, cast<VPBasicBlock>(NewEntry));
+  NewPlan->setMiddleBlock(NewMiddleVPBB);
+
   DenseMap<VPValue *, VPValue *> Old2NewVPValues;
   for (VPValue *OldLiveIn : VPLiveInsToFree) {
     Old2NewVPValues[OldLiveIn] =

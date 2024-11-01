@@ -3553,7 +3553,12 @@ public:
 };
 
 /// VPRegionBlock represents a collection of VPBasicBlocks and VPRegionBlocks
-/// which form a Single-Entry-Single-Exiting subgraph of the output IR CFG.
+/// which form a Single-Entry-Single-Exiting or Single-Entry-Multiple-Exiting
+/// subgraph of the output IR CFG. For the multiple-exiting case only a total
+/// of two exits are currently supported and the early exit is tracked
+/// separately. The first successor should always correspond to the normal
+/// exiting block, i.e. vector latch -> middle.block. An optional second
+/// successor corresponds to the early exit.
 /// A VPRegionBlock may indicate that its contents are to be replicated several
 /// times. This is designed to support predicated scalarization, in which a
 /// scalar if-then code structure needs to be generated VF * UF times. Having
@@ -3561,12 +3566,20 @@ public:
 /// candidate VF's. The actual replication takes place only once the desired VF
 /// and UF have been determined.
 class VPRegionBlock : public VPBlockBase {
-  /// Hold the Single Entry of the SESE region modelled by the VPRegionBlock.
+  /// Hold the Single Entry of the SESE/SEME region modelled by the
+  /// VPRegionBlock.
   VPBlockBase *Entry;
 
-  /// Hold the Single Exiting block of the SESE region modelled by the
+  /// Hold the normal Exiting block of the SESE/SEME region modelled by the
   /// VPRegionBlock.
   VPBlockBase *Exiting;
+
+  /// Hold the Early Exit block of the SEME region, if one exists.
+  VPBasicBlock *EarlyExit;
+
+  /// If one exists, this keeps track of the vector early mask that triggered
+  /// the early exit.
+  VPValue *VectorEarlyExitCond;
 
   /// An indicator whether this region is to generate multiple replicated
   /// instances of output IR corresponding to its VPBlockBases.
@@ -3576,6 +3589,7 @@ public:
   VPRegionBlock(VPBlockBase *Entry, VPBlockBase *Exiting,
                 const std::string &Name = "", bool IsReplicator = false)
       : VPBlockBase(VPRegionBlockSC, Name), Entry(Entry), Exiting(Exiting),
+        EarlyExit(nullptr), VectorEarlyExitCond(nullptr),
         IsReplicator(IsReplicator) {
     assert(Entry->getPredecessors().empty() && "Entry block has predecessors.");
     assert(Exiting->getSuccessors().empty() && "Exit block has successors.");
@@ -3584,6 +3598,7 @@ public:
   }
   VPRegionBlock(const std::string &Name = "", bool IsReplicator = false)
       : VPBlockBase(VPRegionBlockSC, Name), Entry(nullptr), Exiting(nullptr),
+        EarlyExit(nullptr), VectorEarlyExitCond(nullptr),
         IsReplicator(IsReplicator) {}
 
   ~VPRegionBlock() override {
@@ -3602,6 +3617,12 @@ public:
   const VPBlockBase *getEntry() const { return Entry; }
   VPBlockBase *getEntry() { return Entry; }
 
+  /// Sets the early exit vector mask.
+  void setVectorEarlyExitCond(VPValue *V) { VectorEarlyExitCond = V; }
+
+  /// Gets the early exit vector mask
+  VPValue *getVectorEarlyExitCond() const { return VectorEarlyExitCond; }
+
   /// Set \p EntryBlock as the entry VPBlockBase of this VPRegionBlock. \p
   /// EntryBlock must have no predecessors.
   void setEntry(VPBlockBase *EntryBlock) {
@@ -3614,14 +3635,19 @@ public:
   const VPBlockBase *getExiting() const { return Exiting; }
   VPBlockBase *getExiting() { return Exiting; }
 
-  /// Set \p ExitingBlock as the exiting VPBlockBase of this VPRegionBlock. \p
-  /// ExitingBlock must have no successors.
+  /// Set \p ExitingBlock as the normal exiting VPBlockBase of this
+  /// VPRegionBlock. \p ExitingBlock must have no successors.
   void setExiting(VPBlockBase *ExitingBlock) {
     assert(ExitingBlock->getSuccessors().empty() &&
            "Exit block cannot have successors.");
     Exiting = ExitingBlock;
     ExitingBlock->setParent(this);
   }
+
+  void setEarlyExit(VPBasicBlock *ExitBlock) { EarlyExit = ExitBlock; }
+
+  const VPBasicBlock *getEarlyExit() const { return EarlyExit; }
+  VPBasicBlock *getEarlyExit() { return EarlyExit; }
 
   /// Returns the pre-header VPBasicBlock of the loop region.
   VPBasicBlock *getPreheaderVPBB() {
@@ -3676,6 +3702,8 @@ class VPlan {
   /// VPExpandSCEV recipes for expressions used during skeleton creation and the
   /// rest of VPlan execution.
   VPBasicBlock *Preheader;
+
+  VPBasicBlock *MiddleVPBB;
 
   /// Holds the VFs applicable to this VPlan.
   SmallSetVector<ElementCount, 2> VFs;
@@ -3737,7 +3765,7 @@ public:
   /// disconnected, as the bypass blocks between them are not yet modeled in
   /// VPlan.
   VPlan(VPBasicBlock *Preheader, VPBasicBlock *Entry)
-      : Entry(Entry), Preheader(Preheader) {
+      : Entry(Entry), Preheader(Preheader), MiddleVPBB(nullptr) {
     Entry->setPlan(this);
     Preheader->setPlan(this);
     assert(Preheader->getNumSuccessors() == 0 &&
@@ -3773,6 +3801,9 @@ public:
 
   VPBasicBlock *getEntry() { return Entry; }
   const VPBasicBlock *getEntry() const { return Entry; }
+
+  VPBasicBlock *getMiddleBlock() { return MiddleVPBB; }
+  void setMiddleBlock(VPBasicBlock *VPBB) { MiddleVPBB = VPBB; }
 
   /// The trip count of the original loop.
   VPValue *getTripCount() const {

@@ -64,13 +64,12 @@ bool VPRecipeBase::mayWriteToMemory() const {
     case VPInstruction::ExtractFromEnd:
     case VPInstruction::FirstOrderRecurrenceSplice:
     case VPInstruction::LogicalAnd:
+    case VPInstruction::AnyOf:
     case VPInstruction::PtrAdd:
       return false;
     default:
       return true;
     }
-  case VPExpandSCEVSC:
-    return getParent()->getPlan()->getTripCount() == getVPSingleValue();
   case VPInterleaveSC:
     return cast<VPInterleaveRecipe>(this)->getNumStoreOperands() > 0;
   case VPWidenStoreEVLSC:
@@ -166,8 +165,6 @@ bool VPRecipeBase::mayHaveSideEffects() const {
   case VPScalarCastSC:
   case VPReverseVectorPointerSC:
     return false;
-  case VPExpandSCEVSC:
-    return getParent()->getPlan()->getTripCount() == getVPSingleValue();
   case VPInstructionSC:
     return mayWriteToMemory();
   case VPWidenCallSC: {
@@ -229,6 +226,7 @@ void VPLiveOut::fixPhi(VPlan &Plan, VPTransformState &State) {
   auto *PredVPBB = !ExitingVPBB || ExitingVPBB->getEnclosingLoopRegion()
                        ? MiddleVPBB
                        : ExitingVPBB;
+
   BasicBlock *PredBB = State.CFG.VPBB2IRBB[PredVPBB];
   Value *V = State.get(ExitValue, VPLane(0));
   if (Phi->getBasicBlockIndex(PredBB) != -1)
@@ -687,7 +685,6 @@ Value *VPInstruction::generate(VPTransformState &State) {
     Value *A = State.get(getOperand(0));
     return Builder.CreateOrReduce(A);
   }
-
   default:
     llvm_unreachable("Unsupported opcode for instruction");
   }
@@ -759,7 +756,6 @@ bool VPInstruction::onlyFirstLaneUsed(const VPValue *Op) const {
     return false;
   case Instruction::ICmp:
   case Instruction::Select:
-  case Instruction::Or:
   case VPInstruction::PtrAdd:
     // TODO: Cover additional opcodes.
     return vputils::onlyFirstLaneUsed(this);
@@ -875,20 +871,21 @@ void VPInstruction::print(raw_ostream &O, const Twine &Indent,
 void VPIRInstruction::execute(VPTransformState &State) {
   assert((isa<PHINode>(&I) || getNumOperands() == 0) &&
          "Only PHINodes can have extra operands");
-  for (const auto &[Idx, Op] : enumerate(operands())) {
-    VPValue *ExitValue = Op;
+  for (const auto &[Idx, ExitValue] : enumerate(operands())) {
     auto Lane = vputils::isUniformAfterVectorization(ExitValue)
                     ? VPLane::getFirstLane()
                     : VPLane::getLastLaneForVF(State.VF);
-    VPBlockBase *Pred = getParent()->getPredecessors()[Idx];
-    auto *PredVPBB = Pred->getExitingBasicBlock();
+    auto *PredVPBB = cast<VPBasicBlock>(getParent()->getPredecessors()[Idx]);
     BasicBlock *PredBB = State.CFG.VPBB2IRBB[PredVPBB];
     // Set insertion point in PredBB in case an extract needs to be generated.
     // TODO: Model extracts explicitly.
     State.Builder.SetInsertPoint(PredBB, PredBB->getFirstNonPHIIt());
     Value *V = State.get(ExitValue, VPLane(Lane));
     auto *Phi = cast<PHINode>(&I);
-    Phi->addIncoming(V, PredBB);
+    if (Phi->getBasicBlockIndex(PredBB) == -1)
+      Phi->addIncoming(V, PredBB);
+    else
+      Phi->setIncomingValueForBlock(PredBB, V);
   }
 
   // Advance the insert point after the wrapped IR instruction. This allows
@@ -909,7 +906,7 @@ void VPIRInstruction::print(raw_ostream &O, const Twine &Indent,
   O << Indent << "IR " << I;
 
   if (getNumOperands() != 0) {
-    // assert(getNumOperands() == 1 && "can have at most 1 operand");
+    assert(getNumOperands() <= 2 && "can have at most 2 operands");
     O << " (extra operand: ";
     printOperands(O, SlotTracker);
     O << ")";

@@ -2,55 +2,49 @@
 ; RUN: opt -p loop-vectorize -mcpu=skylake-avx512 -mtriple=x86_64-apple-macosx -force-vector-interleave=1 -S -enable-early-exit-vectorization -debug %s 2>&1 | FileCheck %s
 
 define i64 @multi_exiting_to_different_exits_with_store(ptr %p, i64 %N) {
-; CHECK-LABEL: VPlan 'Final VPlan for VF={4},UF={1}' {
-; CHECK-NEXT: Live-in vp<[[VF:%.+]]> = VF
-; CHECK-NEXT: Live-in vp<[[VFxUF:%.+]]> = VF * UF
-; CHECK-NEXT: Live-in vp<[[VTC:%.+]]> = vector-trip-count
-; CHECK-NEXT: Live-in ir<128> = original trip-count
-; CHECK-EMPTY:
-; CHECK-NEXT: vector.ph:
-; CHECK-NEXT: Successor(s): vector loop
-; CHECK-EMPTY:
-; CHECK-NEXT: <x1> vector loop: {
-; CHECK-NEXT:   vector.body:
-; CHECK-NEXT:     EMIT vp<[[CAN_IV:%.+]]> = CANONICAL-INDUCTION ir<0>, vp<%index.next>
-; CHECK-NEXT:     WIDEN-INDUCTION %iv = phi %inc, 0, ir<1>, vp<[[VF]]>
-; CHECK-NEXT:     vp<[[STEPS:%.+]]> = SCALAR-STEPS vp<[[CAN_IV]]>, ir<1>
-; CHECK-NEXT:     WIDEN ir<%c.1> = icmp uge ir<%iv>, ir<%N>
-; CHECK-NEXT:     EMIT vp<[[NOT1:%.+]]> = not ir<%c.1>
-; CHECK-NEXT:     CLONE ir<%arrayidx> = getelementptr ir<%p>, vp<[[STEPS]]>
-; CHECK-NEXT:     vp<[[VEC_PTR:%.+]]> = vector-pointer ir<%arrayidx>
-; CHECK-NEXT:     WIDEN store vp<[[VEC_PTR]]>, ir<0>, vp<[[NOT1]]>
-; CHECK-NEXT:     EMIT vp<%index.next> = add nuw vp<[[CAN_IV]]>, vp<[[VFxUF]]>
-; CHECK-NEXT:     EMIT vp<[[NOT2:%.+]]> = not vp<[[NOT1]]>
-; CHECK-NEXT:     EMIT vp<[[EA_TAKEN:%.+]]> = any-of vp<[[NOT2]]>
-; CHECK-NEXT:     EMIT vp<[[LATCH_CMP:%.+]]> = icmp eq vp<%index.next>, vp<[[VTC]]>
-; CHECK-NEXT:     EMIT vp<[[EC:%.+]]> = or vp<[[EA_TAKEN]]>, vp<[[LATCH_CMP]]>
-; CHECK-NEXT:     EMIT branch-on-cond vp<[[EC]]>
-; CHECK-NEXT:   No successors
-; CHECK-NEXT: }
-; CHECK-NEXT: Successor(s): middle.split
-; CHECK-EMPTY:
-; CHECK-NEXT: middle.split:
-; CHECK-NEXT:   EMIT branch-on-cond vp<[[EA_TAKEN]]>
-; CHECK-NEXT: Successor(s): ir-bb<e1>, middle.block
-; CHECK-EMPTY:
-; CHECK-NEXT: ir-bb<e1>:
-; CHECK-NEXT:   IR %p1 = phi i64 [ 0, %loop.header ] (extra operand: ir<0>)
-; CHECK-NEXT: No successors
-; CHECK-EMPTY:
-; CHECK-NEXT: middle.block:
-; CHECK-NEXT:   EMIT vp<[[MIDDLE_CMP:%.+]]> = icmp eq ir<128>, vp<[[VTC]]>
-; CHECK-NEXT:   EMIT branch-on-cond vp<[[MIDDLE_CMP]]>
-; CHECK-NEXT: Successor(s): ir-bb<e2>, scalar.ph
-; CHECK-EMPTY:
-; CHECK-NEXT: ir-bb<e2>:
-; CHECK-NEXT:  IR %p2 = phi i64 [ 1, %loop.latch ] (extra operand: ir<1>)
-; CHECK-NEXT: No successors
-; CHECK-EMPTY:
-; CHECK-NEXT: scalar.ph:
-; CHECK-NEXT: No successors
-; CHECK-NEXT: }
+; CHECK-LABEL: define i64 @multi_exiting_to_different_exits_with_store(
+; CHECK-SAME: ptr [[P:%.*]], i64 [[N:%.*]]) #[[ATTR0:[0-9]+]] {
+; CHECK-NEXT:  [[ENTRY:.*]]:
+; CHECK-NEXT:    [[UMIN:%.*]] = call i64 @llvm.umin.i64(i64 [[N]], i64 127)
+; CHECK-NEXT:    [[TMP0:%.*]] = add nuw nsw i64 [[UMIN]], 1
+; CHECK-NEXT:    [[MIN_ITERS_CHECK:%.*]] = icmp ule i64 [[TMP0]], 4
+; CHECK-NEXT:    br i1 [[MIN_ITERS_CHECK]], label %[[SCALAR_PH:.*]], label %[[VECTOR_PH:.*]]
+; CHECK:       [[VECTOR_PH]]:
+; CHECK-NEXT:    [[N_MOD_VF:%.*]] = urem i64 [[TMP0]], 4
+; CHECK-NEXT:    [[TMP1:%.*]] = icmp eq i64 [[N_MOD_VF]], 0
+; CHECK-NEXT:    [[TMP2:%.*]] = select i1 [[TMP1]], i64 4, i64 [[N_MOD_VF]]
+; CHECK-NEXT:    [[N_VEC:%.*]] = sub i64 [[TMP0]], [[TMP2]]
+; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
+; CHECK:       [[VECTOR_BODY]]:
+; CHECK-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[TMP3:%.*]] = add i64 [[INDEX]], 0
+; CHECK-NEXT:    [[TMP4:%.*]] = getelementptr inbounds i32, ptr [[P]], i64 [[TMP3]]
+; CHECK-NEXT:    [[TMP5:%.*]] = getelementptr inbounds i32, ptr [[TMP4]], i32 0
+; CHECK-NEXT:    store <4 x i32> zeroinitializer, ptr [[TMP5]], align 4
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
+; CHECK-NEXT:    br i1 [[TMP6]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP0:![0-9]+]]
+; CHECK:       [[MIDDLE_BLOCK]]:
+; CHECK-NEXT:    br label %[[SCALAR_PH]]
+; CHECK:       [[SCALAR_PH]]:
+; CHECK-NEXT:    [[BC_RESUME_VAL:%.*]] = phi i64 [ [[N_VEC]], %[[MIDDLE_BLOCK]] ], [ 0, %[[ENTRY]] ]
+; CHECK-NEXT:    br label %[[LOOP_HEADER:.*]]
+; CHECK:       [[LOOP_HEADER]]:
+; CHECK-NEXT:    [[IV:%.*]] = phi i64 [ [[INC:%.*]], %[[LOOP_LATCH:.*]] ], [ [[BC_RESUME_VAL]], %[[SCALAR_PH]] ]
+; CHECK-NEXT:    [[C_1:%.*]] = icmp uge i64 [[IV]], [[N]]
+; CHECK-NEXT:    br i1 [[C_1]], label %[[E1:.*]], label %[[LOOP_LATCH]]
+; CHECK:       [[LOOP_LATCH]]:
+; CHECK-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds nuw i32, ptr [[P]], i64 [[IV]]
+; CHECK-NEXT:    store i32 0, ptr [[ARRAYIDX]], align 4
+; CHECK-NEXT:    [[INC]] = add nuw i64 [[IV]], 1
+; CHECK-NEXT:    [[C_2:%.*]] = icmp eq i64 [[INC]], 128
+; CHECK-NEXT:    br i1 [[C_2]], label %[[E2:.*]], label %[[LOOP_HEADER]], !llvm.loop [[LOOP3:![0-9]+]]
+; CHECK:       [[E1]]:
+; CHECK-NEXT:    [[P1:%.*]] = phi i64 [ 0, %[[LOOP_HEADER]] ]
+; CHECK-NEXT:    ret i64 [[P1]]
+; CHECK:       [[E2]]:
+; CHECK-NEXT:    [[P2:%.*]] = phi i64 [ 1, %[[LOOP_LATCH]] ]
+; CHECK-NEXT:    ret i64 [[P2]]
 ;
 entry:
   br label %loop.header
@@ -77,51 +71,46 @@ e2:
 }
 
 define i64 @multi_exiting_to_same_exit_with_store(ptr %p, i64 %N) {
-; CHECK-LABEL: VPlan 'Final VPlan for VF={4},UF={1}' {
-; CHECK-NEXT: Live-in vp<[[VF:%.+]]> = VF
-; CHECK-NEXT: Live-in vp<[[VFxUF:%.+]]> = VF * UF
-; CHECK-NEXT: Live-in vp<[[VTC:%.+]]> = vector-trip-count
-; CHECK-NEXT: Live-in ir<128> = original trip-count
-; CHECK-EMPTY:
-; CHECK-NEXT: vector.ph:
-; CHECK-NEXT: Successor(s): vector loop
-; CHECK-EMPTY:
-; CHECK-NEXT: <x1> vector loop: {
-; CHECK-NEXT:   vector.body:
-; CHECK-NEXT:     EMIT vp<[[CAN_IV:%.+]]> = CANONICAL-INDUCTION ir<0>, vp<%index.next>
-; CHECK-NEXT:     WIDEN-INDUCTION %iv = phi %inc, 0, ir<1>, vp<[[VF]]>
-; CHECK-NEXT:     vp<[[STEPS:%.+]]> = SCALAR-STEPS vp<[[CAN_IV]]>, ir<1>
-; CHECK-NEXT:     WIDEN ir<%c.1> = icmp uge ir<%iv>, ir<%N>
-; CHECK-NEXT:     EMIT vp<[[NOT1:%.+]]> = not ir<%c.1>
-; CHECK-NEXT:     CLONE ir<%arrayidx> = getelementptr ir<%p>, vp<[[STEPS]]>
-; CHECK-NEXT:     vp<[[VEC_PTR:%.+]]> = vector-pointer ir<%arrayidx>
-; CHECK-NEXT:     WIDEN store vp<[[VEC_PTR]]>, ir<0>, vp<[[NOT1]]>
-; CHECK-NEXT:     EMIT vp<%index.next> = add nuw vp<[[CAN_IV]]>, vp<[[VFxUF]]>
-; CHECK-NEXT:     EMIT vp<[[NOT2:%.+]]> = not vp<[[NOT1]]>
-; CHECK-NEXT:     EMIT vp<[[EA_TAKEN:%.+]]> = any-of vp<[[NOT2]]>
-; CHECK-NEXT:     EMIT vp<[[LATCH_CMP:%.+]]> = icmp eq vp<%index.next>, vp<[[VTC]]>
-; CHECK-NEXT:     EMIT vp<[[EC:%.+]]> = or vp<[[EA_TAKEN]]>, vp<[[LATCH_CMP]]>
-; CHECK-NEXT:     EMIT branch-on-cond vp<[[EC]]>
-; CHECK-NEXT:   No successors
-; CHECK-NEXT: }
-; CHECK-NEXT: Successor(s): middle.split
-; CHECK-EMPTY:
-; CHECK-NEXT: middle.split:
-; CHECK-NEXT:   EMIT branch-on-cond vp<[[EA_TAKEN]]>
-; CHECK-NEXT: Successor(s): ir-bb<e>, middle.block
-; CHECK-EMPTY:
-; CHECK-NEXT: ir-bb<e>:
-; CHECK-NEXT:    IR   %p1 = phi i64 [ 0, %loop.header ], [ 1, %loop.latch ] (extra operand: ir<0>, ir<1>)
-; CHECK-NEXT: No successors
-; CHECK-EMPTY:
-; CHECK-NEXT: middle.block:
-; CHECK-NEXT:   EMIT vp<[[MIDDLE_CMP:%.+]]> = icmp eq ir<128>, vp<[[VTC]]>
-; CHECK-NEXT:   EMIT branch-on-cond vp<[[MIDDLE_CMP]]>
-; CHECK-NEXT: Successor(s): ir-bb<e>, scalar.ph
-; CHECK-EMPTY:
-; CHECK-NEXT: scalar.ph:
-; CHECK-NEXT: No successors
-; CHECK-NEXT: }
+; CHECK-LABEL: define i64 @multi_exiting_to_same_exit_with_store(
+; CHECK-SAME: ptr [[P:%.*]], i64 [[N:%.*]]) #[[ATTR0]] {
+; CHECK-NEXT:  [[ENTRY:.*]]:
+; CHECK-NEXT:    [[UMIN:%.*]] = call i64 @llvm.umin.i64(i64 [[N]], i64 127)
+; CHECK-NEXT:    [[TMP0:%.*]] = add nuw nsw i64 [[UMIN]], 1
+; CHECK-NEXT:    [[MIN_ITERS_CHECK:%.*]] = icmp ule i64 [[TMP0]], 4
+; CHECK-NEXT:    br i1 [[MIN_ITERS_CHECK]], label %[[SCALAR_PH:.*]], label %[[VECTOR_PH:.*]]
+; CHECK:       [[VECTOR_PH]]:
+; CHECK-NEXT:    [[N_MOD_VF:%.*]] = urem i64 [[TMP0]], 4
+; CHECK-NEXT:    [[TMP1:%.*]] = icmp eq i64 [[N_MOD_VF]], 0
+; CHECK-NEXT:    [[TMP2:%.*]] = select i1 [[TMP1]], i64 4, i64 [[N_MOD_VF]]
+; CHECK-NEXT:    [[N_VEC:%.*]] = sub i64 [[TMP0]], [[TMP2]]
+; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
+; CHECK:       [[VECTOR_BODY]]:
+; CHECK-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[TMP3:%.*]] = add i64 [[INDEX]], 0
+; CHECK-NEXT:    [[TMP4:%.*]] = getelementptr inbounds i32, ptr [[P]], i64 [[TMP3]]
+; CHECK-NEXT:    [[TMP5:%.*]] = getelementptr inbounds i32, ptr [[TMP4]], i32 0
+; CHECK-NEXT:    store <4 x i32> zeroinitializer, ptr [[TMP5]], align 4
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
+; CHECK-NEXT:    br i1 [[TMP6]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP4:![0-9]+]]
+; CHECK:       [[MIDDLE_BLOCK]]:
+; CHECK-NEXT:    br label %[[SCALAR_PH]]
+; CHECK:       [[SCALAR_PH]]:
+; CHECK-NEXT:    [[BC_RESUME_VAL:%.*]] = phi i64 [ [[N_VEC]], %[[MIDDLE_BLOCK]] ], [ 0, %[[ENTRY]] ]
+; CHECK-NEXT:    br label %[[LOOP_HEADER:.*]]
+; CHECK:       [[LOOP_HEADER]]:
+; CHECK-NEXT:    [[IV:%.*]] = phi i64 [ [[INC:%.*]], %[[LOOP_LATCH:.*]] ], [ [[BC_RESUME_VAL]], %[[SCALAR_PH]] ]
+; CHECK-NEXT:    [[C_1:%.*]] = icmp uge i64 [[IV]], [[N]]
+; CHECK-NEXT:    br i1 [[C_1]], label %[[E:.*]], label %[[LOOP_LATCH]]
+; CHECK:       [[LOOP_LATCH]]:
+; CHECK-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds nuw i32, ptr [[P]], i64 [[IV]]
+; CHECK-NEXT:    store i32 0, ptr [[ARRAYIDX]], align 4
+; CHECK-NEXT:    [[INC]] = add nuw i64 [[IV]], 1
+; CHECK-NEXT:    [[C_2:%.*]] = icmp eq i64 [[INC]], 128
+; CHECK-NEXT:    br i1 [[C_2]], label %[[E]], label %[[LOOP_HEADER]], !llvm.loop [[LOOP5:![0-9]+]]
+; CHECK:       [[E]]:
+; CHECK-NEXT:    [[P1:%.*]] = phi i64 [ 0, %[[LOOP_HEADER]] ], [ 1, %[[LOOP_LATCH]] ]
+; CHECK-NEXT:    ret i64 [[P1]]
 ;
 entry:
   br label %loop.header
@@ -146,3 +135,11 @@ e:
 !1 = distinct !{!1, !2, !3}
 !2 = !{!"llvm.loop.vectorize.width", i32 4}
 !3 = !{!"llvm.loop.vectorize.enable", i1 true}
+;.
+; CHECK: [[LOOP0]] = distinct !{[[LOOP0]], [[META1:![0-9]+]], [[META2:![0-9]+]]}
+; CHECK: [[META1]] = !{!"llvm.loop.isvectorized", i32 1}
+; CHECK: [[META2]] = !{!"llvm.loop.unroll.runtime.disable"}
+; CHECK: [[LOOP3]] = distinct !{[[LOOP3]], [[META2]], [[META1]]}
+; CHECK: [[LOOP4]] = distinct !{[[LOOP4]], [[META1]], [[META2]]}
+; CHECK: [[LOOP5]] = distinct !{[[LOOP5]], [[META2]], [[META1]]}
+;.

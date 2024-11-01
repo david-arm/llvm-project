@@ -6,44 +6,40 @@ define i64 @multi_exit_with_store(ptr %p, i64 %N) {
 ; MULTI-LABEL: define i64 @multi_exit_with_store(
 ; MULTI-SAME: ptr [[P:%.*]], i64 [[N:%.*]]) #[[ATTR0:[0-9]+]] {
 ; MULTI-NEXT:  [[ENTRY:.*]]:
-; MULTI-NEXT:    br i1 false, label %[[SCALAR_PH:.*]], label %[[VECTOR_PH:.*]]
+; MULTI-NEXT:    [[UMIN:%.*]] = call i64 @llvm.umin.i64(i64 [[N]], i64 127)
+; MULTI-NEXT:    [[TMP3:%.*]] = add nuw nsw i64 [[UMIN]], 1
+; MULTI-NEXT:    [[MIN_ITERS_CHECK:%.*]] = icmp ule i64 [[TMP3]], 4
+; MULTI-NEXT:    br i1 [[MIN_ITERS_CHECK]], label %[[SCALAR_PH:.*]], label %[[VECTOR_PH:.*]]
 ; MULTI:       [[VECTOR_PH]]:
-; MULTI-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[N]], i64 0
-; MULTI-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
+; MULTI-NEXT:    [[N_MOD_VF:%.*]] = urem i64 [[TMP3]], 4
+; MULTI-NEXT:    [[TMP1:%.*]] = icmp eq i64 [[N_MOD_VF]], 0
+; MULTI-NEXT:    [[TMP2:%.*]] = select i1 [[TMP1]], i64 4, i64 [[N_MOD_VF]]
+; MULTI-NEXT:    [[N_VEC:%.*]] = sub i64 [[TMP3]], [[TMP2]]
 ; MULTI-NEXT:    br label %[[VECTOR_BODY:.*]]
 ; MULTI:       [[VECTOR_BODY]]:
 ; MULTI-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[VECTOR_BODY]] ]
-; MULTI-NEXT:    [[VEC_IND:%.*]] = phi <4 x i64> [ <i64 0, i64 1, i64 2, i64 3>, %[[VECTOR_PH]] ], [ [[VEC_IND_NEXT:%.*]], %[[VECTOR_BODY]] ]
 ; MULTI-NEXT:    [[TMP0:%.*]] = add i64 [[INDEX]], 0
-; MULTI-NEXT:    [[TMP1:%.*]] = icmp uge <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
-; MULTI-NEXT:    [[TMP2:%.*]] = xor <4 x i1> [[TMP1]], <i1 true, i1 true, i1 true, i1 true>
-; MULTI-NEXT:    [[TMP3:%.*]] = getelementptr i32, ptr [[P]], i64 [[TMP0]]
-; MULTI-NEXT:    [[TMP4:%.*]] = getelementptr i32, ptr [[TMP3]], i32 0
-; MULTI-NEXT:    call void @llvm.masked.store.v4i32.p0(<4 x i32> zeroinitializer, ptr [[TMP4]], i32 4, <4 x i1> [[TMP2]])
+; MULTI-NEXT:    [[TMP4:%.*]] = getelementptr inbounds i32, ptr [[P]], i64 [[TMP0]]
+; MULTI-NEXT:    [[TMP5:%.*]] = getelementptr inbounds i32, ptr [[TMP4]], i32 0
+; MULTI-NEXT:    store <4 x i32> zeroinitializer, ptr [[TMP5]], align 4
 ; MULTI-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
-; MULTI-NEXT:    [[TMP5:%.*]] = xor <4 x i1> [[TMP2]], <i1 true, i1 true, i1 true, i1 true>
-; MULTI-NEXT:    [[TMP6:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP5]])
-; MULTI-NEXT:    [[TMP7:%.*]] = icmp eq i64 [[INDEX_NEXT]], 128
-; MULTI-NEXT:    [[VEC_IND_NEXT]] = add <4 x i64> [[VEC_IND]], <i64 4, i64 4, i64 4, i64 4>
-; MULTI-NEXT:    [[TMP8:%.*]] = or i1 [[TMP6]], [[TMP7]]
-; MULTI-NEXT:    br i1 [[TMP8]], label %[[MIDDLE_SPLIT:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP0:![0-9]+]]
-; MULTI:       [[MIDDLE_SPLIT]]:
-; MULTI-NEXT:    br i1 [[TMP6]], label %[[E1:.*]], label %[[MIDDLE_BLOCK:.*]]
+; MULTI-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
+; MULTI-NEXT:    br i1 [[TMP6]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP0:![0-9]+]]
 ; MULTI:       [[MIDDLE_BLOCK]]:
-; MULTI-NEXT:    br i1 true, label %[[E2:.*]], label %[[SCALAR_PH]]
+; MULTI-NEXT:    br label %[[SCALAR_PH]]
 ; MULTI:       [[SCALAR_PH]]:
-; MULTI-NEXT:    [[BC_RESUME_VAL:%.*]] = phi i64 [ 128, %[[MIDDLE_BLOCK]] ], [ 0, %[[ENTRY]] ]
+; MULTI-NEXT:    [[BC_RESUME_VAL:%.*]] = phi i64 [ [[N_VEC]], %[[MIDDLE_BLOCK]] ], [ 0, %[[ENTRY]] ]
 ; MULTI-NEXT:    br label %[[LOOP_HEADER:.*]]
 ; MULTI:       [[LOOP_HEADER]]:
 ; MULTI-NEXT:    [[I_07:%.*]] = phi i64 [ [[INC:%.*]], %[[LOOP_LATCH:.*]] ], [ [[BC_RESUME_VAL]], %[[SCALAR_PH]] ]
 ; MULTI-NEXT:    [[CMP1:%.*]] = icmp uge i64 [[I_07]], [[N]]
-; MULTI-NEXT:    br i1 [[CMP1]], label %[[E1]], label %[[LOOP_LATCH]]
+; MULTI-NEXT:    br i1 [[CMP1]], label %[[E1:.*]], label %[[LOOP_LATCH]]
 ; MULTI:       [[LOOP_LATCH]]:
 ; MULTI-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds nuw i32, ptr [[P]], i64 [[I_07]]
 ; MULTI-NEXT:    store i32 0, ptr [[ARRAYIDX]], align 4
 ; MULTI-NEXT:    [[INC]] = add nuw i64 [[I_07]], 1
 ; MULTI-NEXT:    [[CMP_NOT:%.*]] = icmp eq i64 [[INC]], 128
-; MULTI-NEXT:    br i1 [[CMP_NOT]], label %[[E2]], label %[[LOOP_HEADER]], !llvm.loop [[LOOP3:![0-9]+]]
+; MULTI-NEXT:    br i1 [[CMP_NOT]], label %[[E2:.*]], label %[[LOOP_HEADER]], !llvm.loop [[LOOP3:![0-9]+]]
 ; MULTI:       [[E1]]:
 ; MULTI-NEXT:    ret i64 0
 ; MULTI:       [[E2]]:
@@ -117,38 +113,34 @@ define i64 @multi_exiting_to_same_exit_with_store(ptr %p, i64 %N) {
 ; MULTI-LABEL: define i64 @multi_exiting_to_same_exit_with_store(
 ; MULTI-SAME: ptr [[P:%.*]], i64 [[N:%.*]]) #[[ATTR0]] {
 ; MULTI-NEXT:  [[ENTRY:.*]]:
-; MULTI-NEXT:    br i1 false, label %[[SCALAR_PH:.*]], label %[[VECTOR_PH:.*]]
+; MULTI-NEXT:    [[UMIN:%.*]] = call i64 @llvm.umin.i64(i64 [[N]], i64 127)
+; MULTI-NEXT:    [[TMP3:%.*]] = add nuw nsw i64 [[UMIN]], 1
+; MULTI-NEXT:    [[MIN_ITERS_CHECK:%.*]] = icmp ule i64 [[TMP3]], 4
+; MULTI-NEXT:    br i1 [[MIN_ITERS_CHECK]], label %[[SCALAR_PH:.*]], label %[[VECTOR_PH:.*]]
 ; MULTI:       [[VECTOR_PH]]:
-; MULTI-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[N]], i64 0
-; MULTI-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
+; MULTI-NEXT:    [[N_MOD_VF:%.*]] = urem i64 [[TMP3]], 4
+; MULTI-NEXT:    [[TMP1:%.*]] = icmp eq i64 [[N_MOD_VF]], 0
+; MULTI-NEXT:    [[TMP2:%.*]] = select i1 [[TMP1]], i64 4, i64 [[N_MOD_VF]]
+; MULTI-NEXT:    [[N_VEC:%.*]] = sub i64 [[TMP3]], [[TMP2]]
 ; MULTI-NEXT:    br label %[[VECTOR_BODY:.*]]
 ; MULTI:       [[VECTOR_BODY]]:
 ; MULTI-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[VECTOR_BODY]] ]
-; MULTI-NEXT:    [[VEC_IND:%.*]] = phi <4 x i64> [ <i64 0, i64 1, i64 2, i64 3>, %[[VECTOR_PH]] ], [ [[VEC_IND_NEXT:%.*]], %[[VECTOR_BODY]] ]
 ; MULTI-NEXT:    [[TMP0:%.*]] = add i64 [[INDEX]], 0
-; MULTI-NEXT:    [[TMP1:%.*]] = icmp uge <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
-; MULTI-NEXT:    [[TMP2:%.*]] = xor <4 x i1> [[TMP1]], <i1 true, i1 true, i1 true, i1 true>
-; MULTI-NEXT:    [[TMP3:%.*]] = getelementptr i32, ptr [[P]], i64 [[TMP0]]
-; MULTI-NEXT:    [[TMP4:%.*]] = getelementptr i32, ptr [[TMP3]], i32 0
-; MULTI-NEXT:    call void @llvm.masked.store.v4i32.p0(<4 x i32> zeroinitializer, ptr [[TMP4]], i32 4, <4 x i1> [[TMP2]])
+; MULTI-NEXT:    [[TMP4:%.*]] = getelementptr inbounds i32, ptr [[P]], i64 [[TMP0]]
+; MULTI-NEXT:    [[TMP5:%.*]] = getelementptr inbounds i32, ptr [[TMP4]], i32 0
+; MULTI-NEXT:    store <4 x i32> zeroinitializer, ptr [[TMP5]], align 4
 ; MULTI-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
-; MULTI-NEXT:    [[TMP5:%.*]] = xor <4 x i1> [[TMP2]], <i1 true, i1 true, i1 true, i1 true>
-; MULTI-NEXT:    [[TMP6:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP5]])
-; MULTI-NEXT:    [[TMP7:%.*]] = icmp eq i64 [[INDEX_NEXT]], 128
-; MULTI-NEXT:    [[VEC_IND_NEXT]] = add <4 x i64> [[VEC_IND]], <i64 4, i64 4, i64 4, i64 4>
-; MULTI-NEXT:    [[TMP8:%.*]] = or i1 [[TMP6]], [[TMP7]]
-; MULTI-NEXT:    br i1 [[TMP8]], label %[[MIDDLE_SPLIT:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP4:![0-9]+]]
-; MULTI:       [[MIDDLE_SPLIT]]:
-; MULTI-NEXT:    br i1 [[TMP6]], label %[[E:.*]], label %[[MIDDLE_BLOCK:.*]]
+; MULTI-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
+; MULTI-NEXT:    br i1 [[TMP6]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP4:![0-9]+]]
 ; MULTI:       [[MIDDLE_BLOCK]]:
-; MULTI-NEXT:    br i1 true, label %[[E]], label %[[SCALAR_PH]]
+; MULTI-NEXT:    br label %[[SCALAR_PH]]
 ; MULTI:       [[SCALAR_PH]]:
-; MULTI-NEXT:    [[BC_RESUME_VAL:%.*]] = phi i64 [ 128, %[[MIDDLE_BLOCK]] ], [ 0, %[[ENTRY]] ]
+; MULTI-NEXT:    [[BC_RESUME_VAL:%.*]] = phi i64 [ [[N_VEC]], %[[MIDDLE_BLOCK]] ], [ 0, %[[ENTRY]] ]
 ; MULTI-NEXT:    br label %[[LOOP_HEADER:.*]]
 ; MULTI:       [[LOOP_HEADER]]:
 ; MULTI-NEXT:    [[IV:%.*]] = phi i64 [ [[INC:%.*]], %[[LOOP_LATCH:.*]] ], [ [[BC_RESUME_VAL]], %[[SCALAR_PH]] ]
 ; MULTI-NEXT:    [[C_1:%.*]] = icmp uge i64 [[IV]], [[N]]
-; MULTI-NEXT:    br i1 [[C_1]], label %[[E]], label %[[LOOP_LATCH]]
+; MULTI-NEXT:    br i1 [[C_1]], label %[[E:.*]], label %[[LOOP_LATCH]]
 ; MULTI:       [[LOOP_LATCH]]:
 ; MULTI-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds nuw i32, ptr [[P]], i64 [[IV]]
 ; MULTI-NEXT:    store i32 0, ptr [[ARRAYIDX]], align 4
@@ -156,7 +148,7 @@ define i64 @multi_exiting_to_same_exit_with_store(ptr %p, i64 %N) {
 ; MULTI-NEXT:    [[C_2:%.*]] = icmp eq i64 [[INC]], 128
 ; MULTI-NEXT:    br i1 [[C_2]], label %[[E]], label %[[LOOP_HEADER]], !llvm.loop [[LOOP5:![0-9]+]]
 ; MULTI:       [[E]]:
-; MULTI-NEXT:    [[P1:%.*]] = phi i64 [ 0, %[[LOOP_HEADER]] ], [ 1, %[[LOOP_LATCH]] ], [ 0, %[[MIDDLE_BLOCK]] ], [ 1, %[[MIDDLE_SPLIT]] ]
+; MULTI-NEXT:    [[P1:%.*]] = phi i64 [ 0, %[[LOOP_HEADER]] ], [ 1, %[[LOOP_LATCH]] ]
 ; MULTI-NEXT:    ret i64 [[P1]]
 ;
 ; DEFAULT-LABEL: define i64 @multi_exiting_to_same_exit_with_store(

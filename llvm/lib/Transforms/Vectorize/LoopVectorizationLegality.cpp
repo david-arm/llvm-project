@@ -43,10 +43,6 @@ AllowStridedPointerIVs("lv-strided-pointer-ivs", cl::init(false), cl::Hidden,
                        cl::desc("Enable recognition of non-constant strided "
                                 "pointer induction variables."));
 
-static cl::opt<bool>
-    EnableEarlyExitVectorization("enable-early-exit-vectorization",
-                                 cl::init(false), cl::Hidden, cl::desc(""));
-
 namespace llvm {
 cl::opt<bool>
     HintsAllowReordering("hints-allow-reordering", cl::init(true), cl::Hidden,
@@ -86,6 +82,12 @@ static cl::opt<LoopVectorizeHints::ScalableForceKind>
 static cl::opt<bool> EnableHistogramVectorization(
     "enable-histogram-loop-vectorization", cl::init(false), cl::Hidden,
     cl::desc("Enables autovectorization of some loops containing histograms"));
+
+static cl::opt<bool> AssumeNoMemFault(
+    "vectorizer-no-mem-fault", cl::init(false), cl::Hidden,
+    cl::desc("Assume vectorized loops will not have memory faults, which is "
+             "potentially unsafe but can be useful for testing vectorization "
+             "of early exit loops."));
 
 /// Maximum vectorization interleave count.
 static const unsigned MaxInterleaveFactor = 16;
@@ -1379,10 +1381,14 @@ bool LoopVectorizationLegality::isFixedOrderRecurrence(
 }
 
 bool LoopVectorizationLegality::blockNeedsPredication(BasicBlock *BB) const {
-  // When vectorizing early exits, create predicates for all blocks, except the
-  // header.
-  if (canVectorizeEarlyExit() && BB != TheLoop->getHeader())
+  // The only block currently permitted after the early exiting block is the
+  // loop latch, so only that blocks needs predication.
+  // FIXME: Once we support instructions in the loop that cannot be executed
+  // speculatively, such as stores, we will also need to predicate all blocks
+  // leading up to the early exit too.
+  if (hasUncountableEarlyExit() && BB == TheLoop->getLoopLatch())
     return true;
+
   return LoopAccessInfo::blockNeedsPredication(BB, TheLoop, DT);
 }
 
@@ -1519,27 +1525,6 @@ bool LoopVectorizationLegality::canVectorizeWithIfConvert() {
   return true;
 }
 
-bool LoopVectorizationLegality::canVectorizeEarlyExit() const {
-  // Currently only allow vectorizing loops with early exits, if early-exit
-  // vectorization is explicitly enabled and the loop has metadata to force
-  // vectorization.
-  if (!EnableEarlyExitVectorization)
-    return false;
-
-  SmallVector<BasicBlock *> Exiting;
-  TheLoop->getExitingBlocks(Exiting);
-  if (Exiting.size() == 1)
-    return false;
-
-  LoopVectorizeHints Hints(TheLoop, true, *ORE);
-  if (Hints.getForce() == LoopVectorizeHints::FK_Undefined)
-    return false;
-
-  Function *Fn = TheLoop->getHeader()->getParent();
-  return Hints.allowVectorization(Fn, TheLoop,
-                                  true /*VectorizeOnlyWhenForced*/);
-}
-
 // Helper function to canVectorizeLoopNestCFG.
 bool LoopVectorizationLegality::canVectorizeLoopCFG(Loop *Lp,
                                                     bool UseVPlanNativePath) {
@@ -1662,6 +1647,15 @@ bool LoopVectorizationLegality::isVectorizableEarlyExitLoop() {
   // PSE.getSymbolicMaxBackedgeTakenCount() below.
   Predicates.clear();
 
+  unsigned NumUncountableExits = getUncountableExitingBlocks().size();
+  if (NumUncountableExits > 0) {
+    LoopVectorizeHints Hints(TheLoop, true, *ORE);
+    if (Hints.getForce() != LoopVectorizeHints::FK_Undefined &&
+        Hints.allowVectorization(TheLoop->getHeader()->getParent(), TheLoop,
+                                 true /*VectorizeOnlyWhenForced*/))
+      return true;
+  }
+
   // We only support one uncountable early exit.
   if (getUncountableExitingBlocks().size() != 1) {
     reportVectorizationFailure(
@@ -1736,11 +1730,15 @@ bool LoopVectorizationLegality::isVectorizableEarlyExitLoop() {
   Predicates.clear();
   if (!isDereferenceableReadOnlyLoop(TheLoop, PSE.getSE(), DT, AC,
                                      &Predicates)) {
-    reportVectorizationFailure(
-        "Loop may fault",
-        "Cannot vectorize potentially faulting early exit loop",
-        "PotentiallyFaultingEarlyExitLoop", ORE, TheLoop);
-    return false;
+    if (!AssumeNoMemFault) {
+      reportVectorizationFailure(
+          "Loop may fault",
+          "Cannot vectorize potentially faulting early exit loop",
+          "PotentiallyFaultingEarlyExitLoop", ORE, TheLoop);
+      return false;
+    } else
+      LLVM_DEBUG(dbgs() << "LV: Assuming early exit vector loop will not "
+                        << "fault\n");
   }
 
   [[maybe_unused]] const SCEV *SymbolicMaxBTC =
