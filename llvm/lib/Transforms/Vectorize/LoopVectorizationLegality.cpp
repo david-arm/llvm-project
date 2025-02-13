@@ -1641,7 +1641,7 @@ bool LoopVectorizationLegality::analyzePotentiallyFaultingLoads(
       return false;
 
     LLVM_DEBUG(dbgs() << "LV: SCEV for Load Ptr: " << *Start << '\n');
-    PotentiallyFaultingLoads.push_back({LI, Start});
+    PotentiallyFaultingPtrs.push_back({Start, LI->getType()});
   }
   return true;
 }
@@ -1750,6 +1750,8 @@ bool LoopVectorizationLegality::isVectorizableEarlyExitLoop() {
     }
   };
 
+  Predicates.clear();
+  SmallVector<LoadInst *, 4> NonDerefLoads;
   for (auto *BB : TheLoop->blocks())
     for (auto &I : *BB) {
       if (I.mayWriteToMemory()) {
@@ -1759,24 +1761,30 @@ bool LoopVectorizationLegality::isVectorizableEarlyExitLoop() {
             "Cannot vectorize early exit loop with writes to memory",
             "WritesInEarlyExitLoop", ORE, TheLoop);
         return false;
-      } else if (!IsSafeOperation(&I)) {
+      } else if (I.mayThrow() || !IsSafeOperation(&I)) {
         reportVectorizationFailure("Early exit loop contains operations that "
                                    "cannot be speculatively executed",
                                    "UnsafeOperationsEarlyExitLoop", ORE,
                                    TheLoop);
         return false;
+      } else if (I.mayReadFromMemory()) {
+        auto *LI = dyn_cast<LoadInst>(&I);
+        if (!LI) {
+          reportVectorizationFailure(
+              "Loop may fault",
+              "Cannot vectorize potentially faulting early exit loop",
+              "PotentiallyFaultingEarlyExitLoop", ORE, TheLoop);
+          return false;
+        } else if (!isDereferenceableAndAlignedInLoop(LI, TheLoop, *PSE.getSE(),
+                                                      *DT, AC, &Predicates))
+          NonDerefLoads.push_back(LI);
       }
     }
 
-  // The vectoriser cannot handle loads that occur after the early exit block.
-  assert(LatchBB->getUniquePredecessor() == SingleUncountableEdge->first &&
-         "Expected latch predecessor to be the early exiting block");
-
-  Predicates.clear();
-  SmallVector<LoadInst *, 4> Loads;
-  if (!isDereferenceableReadOnlyLoop(TheLoop, PSE.getSE(), DT, AC, &Predicates,
-                                     &Loads)) {
-    if (!TTI->getMinPageSize() || !analyzePotentiallyFaultingLoads(&Loads)) {
+  if (!NonDerefLoads.empty()) {
+    if (!TTI->getMinPageSize() ||
+        !analyzePotentiallyFaultingLoads(&NonDerefLoads)) {
+      PotentiallyFaultingPtrs.clear();
       reportVectorizationFailure(
           "Loop may fault",
           "Cannot vectorize potentially faulting early exit loop",
@@ -1785,6 +1793,10 @@ bool LoopVectorizationLegality::isVectorizableEarlyExitLoop() {
     }
     LLVM_DEBUG(dbgs() << "We can vectorize the loop with runtime checks.\n");
   }
+
+  // The vectoriser cannot handle loads that occur after the early exit block.
+  assert(LatchBB->getUniquePredecessor() == SingleUncountableEdge->first &&
+         "Expected latch predecessor to be the early exiting block");
 
   [[maybe_unused]] const SCEV *SymbolicMaxBTC =
       PSE.getSymbolicMaxBackedgeTakenCount();

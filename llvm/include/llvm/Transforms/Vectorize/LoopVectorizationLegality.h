@@ -382,11 +382,18 @@ public:
   const LoopAccessInfo *getLAI() const { return LAI; }
 
   bool isSafeForAnyVectorWidth() const {
-    return LAI->getDepChecker().isSafeForAnyVectorWidth();
+    return LAI->getDepChecker().isSafeForAnyVectorWidth() &&
+           (!hasUncountableEarlyExit() || !getNumPotentiallyFaultingPointers());
   }
 
   uint64_t getMaxSafeVectorWidthInBits() const {
-    return LAI->getDepChecker().getMaxSafeVectorWidthInBits();
+    uint64_t MaxSafeVectorWidth =
+        LAI->getDepChecker().getMaxSafeVectorWidthInBits();
+    // The legalizer bails out if getMinPageSize does not return a value.
+    if (hasUncountableEarlyExit() && getNumPotentiallyFaultingPointers())
+      MaxSafeVectorWidth =
+          std::min(MaxSafeVectorWidth, uint64_t(*TTI->getMinPageSize()) * 8);
+    return MaxSafeVectorWidth;
   }
 
   /// Returns true if the loop has exactly one uncountable early exit, i.e. an
@@ -423,17 +430,17 @@ public:
   unsigned getNumStores() const { return LAI->getNumStores(); }
   unsigned getNumLoads() const { return LAI->getNumLoads(); }
 
-  /// Return the number of loads in the loop that could potentially fault in a
-  /// loop with uncountable early exits.
-  unsigned getNumPotentiallyFaultingLoads() const {
-    return PotentiallyFaultingLoads.size();
+  /// Return the number of pointers in the loop that could potentially fault in
+  /// a loop with uncountable early exits.
+  unsigned getNumPotentiallyFaultingPointers() const {
+    return PotentiallyFaultingPtrs.size();
   }
 
-  /// Return a vector of all potentially faulting loads in a loop with
+  /// Return a vector of all potentially faulting pointers in a loop with
   /// uncountable early exits.
-  const SmallVectorImpl<std::pair<LoadInst *, const SCEV *>> *
-  getPotentiallyFaultingLoads() const {
-    return &PotentiallyFaultingLoads;
+  const SmallVectorImpl<std::pair<const SCEV *, Type *>> *
+  getPotentiallyFaultingPointers() const {
+    return &PotentiallyFaultingPtrs;
   }
 
   /// Returns a HistogramInfo* for the given instruction if it was determined
@@ -543,7 +550,7 @@ private:
 
   /// Returns true if all loads in the loop contained in \p Loads can be
   /// analyzed as potentially faulting. Any loads that may fault are added to
-  /// the member variable PotentiallyFaultingLoads.
+  /// the member variable PotentiallyFaultingPtrs.
   bool analyzePotentiallyFaultingLoads(SmallVectorImpl<LoadInst *> *Loads);
 
   /// Return true if all of the instructions in the block can be speculatively
@@ -671,9 +678,9 @@ private:
   /// of (Exiting, Exit) blocks, if there is exactly one early exit.
   std::optional<std::pair<BasicBlock *, BasicBlock *>> UncountableEdge;
 
-  /// Keep a record of all potentially faulting loads in loops with
+  /// Keep a record of all potentially faulting pointers in loops with
   /// uncountable early exits.
-  SmallVector<std::pair<LoadInst *, const SCEV *>, 4> PotentiallyFaultingLoads;
+  SmallVector<std::pair<const SCEV *, Type *>, 4> PotentiallyFaultingPtrs;
 };
 
 } // namespace llvm
