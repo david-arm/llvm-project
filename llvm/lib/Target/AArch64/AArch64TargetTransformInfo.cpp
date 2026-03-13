@@ -1111,15 +1111,10 @@ AArch64TTIImpl::getIntrinsicInstrCost(const IntrinsicCostAttributes &ICA,
   case Intrinsic::pow: {
     // For scalar calls we know the target has the libcall, and for fixed-width
     // vectors we know for the worst case it can be scalarised.
-    bool CanLowerWithLibcalls = true;
     EVT VT = getTLI()->getValueType(DL, RetTy);
     RTLIB::Libcall LC = RTLIB::getPOW(VT);
-
-    if (isa<VectorType>(RetTy)) {
-      bool HasVectorLibcall =
-          getTLI()->getLibcallImpl(LC) != RTLIB::Unsupported;
-      CanLowerWithLibcalls = isa<FixedVectorType>(RetTy) || HasVectorLibcall;
-    }
+    bool HasLibcall = getTLI()->getLibcallImpl(LC) != RTLIB::Unsupported;
+    bool CanLowerWithLibcalls = !isa<ScalableVectorType>(RetTy) || HasLibcall;
 
     // If we know that the call can be lowered with libcalls then it's safe to
     // reduce the costs in some cases. This is important for scalable vectors,
@@ -1151,7 +1146,7 @@ AArch64TTIImpl::getIntrinsicInstrCost(const IntrinsicCostAttributes &ICA,
       }
     }
 
-    if (getTLI()->getLibcallImpl(LC) != RTLIB::Unsupported)
+    if (HasLibcall)
       return getCallInstrCost(nullptr, RetTy, ICA.getArgTypes(), CostKind);
     break;
   }
