@@ -222,7 +222,7 @@ for.end:
 ; Cost of sdiv:
 ;   (sdiv(2) + extractelement(8) + insertelement(4)) / 2 = 7
 ; Cost of udiv:
-;   (udiv(2) + extractelement(8) + insertelement(4)) / 2 = 7
+;   (udiv(2) + extractelement(4) + insertelement(4)) / 2 = 5
 ; Cost of sub:
 ;   (sub(2) + extractelement(4)) / 2 = 3
 ; Cost of store:
