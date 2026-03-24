@@ -249,7 +249,7 @@ for.end:
 
 @a = common global [64 x i32] zeroinitializer, align 16
 
-; Function Attrs: norecurse nounwind uwtable
+; Function Attrs: norecurse
 define void @pr34283() {
 entry:
   br label %for.body

@@ -20,7 +20,7 @@
 @arr2 = external global [8 x i32], align 16
 @arr = external global [8 x [8 x i32]], align 16
 
-; Function Attrs: norecurse nounwind uwtable
+; Function Attrs: norecurse
 define void @foo(i32 %n) {
 ; CHECK-LABEL: define void @foo(
 ; CHECK-SAME: i32 [[N:%.*]]) {

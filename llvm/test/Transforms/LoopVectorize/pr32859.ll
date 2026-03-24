@@ -9,7 +9,7 @@
 ; CHECK-LABEL: for.cond.preheader:
 ; CHECK: %e.0.ph = phi i32 [ 0, %if.end.2.i ], [ 0, %middle.block ]
 
-; Function Attrs: nounwind uwtable
+; Function Attrs:
 define void @main(i32 %n, i32 %v) #0 {
 entry:
   br label %for.cond1.preheader.i
