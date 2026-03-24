@@ -18,7 +18,6 @@ target triple = "x86_64-unknown-linux-gnu"
 ;   }
 ; }
 
-; Function Attrs:
 define void @foo(ptr nocapture %a, ptr nocapture %b, i32 %k, i32 %m) #0 {
 ; CHECK-LABEL: @foo(
 ; CHECK-NEXT:  entry:
