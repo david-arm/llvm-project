@@ -17,7 +17,7 @@ target triple = "x86_64-unknown-linux-gnu"
 @a = global [5 x i32] zeroinitializer, align 16
 @b = global [5 x i32] zeroinitializer, align 16
 
-; Function Attrs: nofree norecurse nounwind uwtable
+; Function Attrs: nofree norecurse
 define void @_Z3fooi(i32 %M) {
 ; CHECK-LABEL: @_Z3fooi(
 ; CHECK:       [[VECTOR_BODY:vector\.body]]:
