@@ -31,7 +31,7 @@ entry:
   ret i32 0
 }
 
-define i32 @init(ptr nocapture %name) unnamed_addr {
+define i32 @init(ptr nocapture %name) {
 entry:
   br label %"3"
 

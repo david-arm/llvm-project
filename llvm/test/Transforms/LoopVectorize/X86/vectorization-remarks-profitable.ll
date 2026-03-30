@@ -22,7 +22,6 @@
 target datalayout = "e-m:o-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-apple-macosx10.10.0"
 
-; Function Attrs:
 define void @do_not_interleave(ptr noalias nocapture readonly %in, ptr noalias nocapture %out, i32 %size) #0 !dbg !4 {
 entry:
   %cmp.4 = icmp eq i32 %size, 0, !dbg !10
@@ -50,7 +49,6 @@ for.end:                                          ; preds = %for.end.loopexit, %
   ret void, !dbg !19
 }
 
-; Function Attrs:
 define void @interleave_not_profitable(ptr noalias nocapture readonly %in, ptr noalias nocapture %out, i32 %size) #0 !dbg !6 {
 entry:
   %cmp.4 = icmp eq i32 %size, 0, !dbg !20

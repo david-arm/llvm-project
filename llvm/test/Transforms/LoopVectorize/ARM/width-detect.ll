@@ -29,7 +29,7 @@ define float @foo_F32(ptr nocapture %A, i32 %n) readonly {
 ;CHECK:foo_I8
 ;CHECK: xor <16 x i8>
 ;CHECK:ret
-define signext i8 @foo_I8(ptr nocapture %A, i32 %n) readonly {
+define i8 @foo_I8(ptr nocapture %A, i32 %n) readonly {
   %1 = icmp sgt i32 %n, 0
   br i1 %1, label %.lr.ph, label %._crit_edge
 
