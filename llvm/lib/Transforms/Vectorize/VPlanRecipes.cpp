@@ -3618,10 +3618,9 @@ InstructionCost VPReplicateRecipe::computeCost(ElementCount VF,
 
     TTI::VectorInstrContext VIC =
         IsLoad ? TTI::VectorInstrContext::Load : TTI::VectorInstrContext::Store;
-    InstructionCost Cost =
-        (ScalarCost * VF.getFixedValue()) +
-        Ctx.getScalarizationOverhead(ResultTy, OpsToScalarize, VF, this, VIC,
-                                     true);
+    InstructionCost Cost = (ScalarCost * VF.getFixedValue()) +
+                           Ctx.getScalarizationOverhead(
+                               ResultTy, OpsToScalarize, VF, this, VIC, true);
 
     const VPRegionBlock *ParentRegion = getRegion();
     if (ParentRegion && ParentRegion->isReplicator()) {
